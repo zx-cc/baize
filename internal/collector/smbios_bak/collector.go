@@ -74,6 +74,7 @@ func GetTypeData[T any](t uint8) ([]T, error) {
 
 	var res []T
 
+	println(len(s.Tables))
 	for _, tb := range s.Tables {
 		if tb.Header.Type == t {
 			data, err := tp(&tb)

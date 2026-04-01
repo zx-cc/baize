@@ -3,6 +3,8 @@ package smbios
 import (
 	"fmt"
 	"strings"
+
+	"github.com/zx-cc/baize/pkg/utils"
 )
 
 type Type0BIOS struct {
@@ -168,7 +170,7 @@ func (b BIOSCharsExt2) String() string {
 
 func (b *Type0BIOS) GetROMSize() string {
 	if b.ExtendedROMSize == 0 || b.ROMSize != 0xFF {
-		return kgmt((uint64(b.ROMSize) + 1) * 65536)
+		return utils.AutoFormatSize((float64(b.ROMSize)+1)*65536, "B", true)
 	}
 	extSize := uint64(b.ExtendedROMSize)
 	unit := (extSize >> 14)
@@ -179,7 +181,7 @@ func (b *Type0BIOS) GetROMSize() string {
 	case 1:
 		multilplier = 1024 * 1024 * 1024
 	}
-	return kgmt((extSize & 0x3FFF) * multilplier)
+	return utils.AutoFormatSize(float64((extSize&0x3FFF)*multilplier), "B", true)
 }
 
 const (

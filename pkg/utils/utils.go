@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -189,4 +190,25 @@ func AutoFormatSize(size float64, fromUnit string, binary bool) string {
 	}
 
 	return fmt.Sprintf("%.2f %s", bytes, unitNames[idx])
+}
+
+func FillField(s string, t *string) {
+	if s == "" || *t != "" {
+		return
+	}
+
+	*t = s
+}
+
+// ReadLinkBase 读取符号链接的基本名称
+// 该函数首先通过 os.Readlink 获取符号链接的目标路径，然后使用 filepath.Base 提取该路径的基本名称（最后一部分）
+// path: 符号链接的路径
+// 返回值: 符号链接目标的基本名称和可能的错误
+func ReadLinkBase(path string) (string, error) {
+	link, err := os.Readlink(path)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Base(link), nil
 }

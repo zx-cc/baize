@@ -18,8 +18,8 @@ type Type1System struct {
 }
 
 func parseType1System(t *Table) (*Type1System, error) {
-	if t.Type != 1 {
-		return nil, fmt.Errorf("%s: %d", ErrInvalidTableType, t.Type)
+	if t.Header.Type != 1 {
+		return nil, fmt.Errorf("%s: %d", ErrInvalidTableType, t.Header.Type)
 	}
 	if t.Header.Length < 0x8 {
 		return nil, fmt.Errorf("%s: system info table must be at least %d bytes", ErrInvalidTableLength, 8)

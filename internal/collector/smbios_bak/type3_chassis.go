@@ -35,8 +35,8 @@ func (cce *ChassisContainedElement) String() string {
 }
 
 func parseType3Chassis(t *Table) (*Type3Chassis, error) {
-	if t.Type != 3 {
-		return nil, fmt.Errorf("%s:%d", ErrInvalidTableType, t.Type)
+	if t.Header.Type != 3 {
+		return nil, fmt.Errorf("%s:%d", ErrInvalidTableType, t.Header.Type)
 	}
 	if t.Header.Length < 0x9 {
 		return nil, fmt.Errorf("%s: chassis info table must be at least %d bytes", ErrInvalidTableLength, 0x9)
