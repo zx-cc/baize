@@ -37,8 +37,8 @@ type Type4Processor struct {
 }
 
 func parseType4Processor(t *Table) (*Type4Processor, error) {
-	if t.Type != 4 {
-		return nil, fmt.Errorf("%s: %d", ErrInvalidTableType, t.Type)
+	if t.Header.Type != 4 {
+		return nil, fmt.Errorf("%s: %d", ErrInvalidTableType, t.Header.Type)
 	}
 
 	if t.Header.Length < 0x1A {

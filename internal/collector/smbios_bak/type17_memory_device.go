@@ -3,6 +3,8 @@ package smbios
 import (
 	"fmt"
 	"strings"
+
+	"github.com/zx-cc/baize/pkg/utils"
 )
 
 type Type17MemoryDevice struct {
@@ -75,13 +77,13 @@ func (t *Type17MemoryDevice) GetSizeString() string {
 	case 0xFFFF:
 		return "Unknown"
 	case 0x7FFF:
-		return kgmt(uint64(t.ExtendedSize&0x7FFFFFFF) * 1024 * 1024)
+		return utils.AutoFormatSize(float64(t.ExtendedSize&0x7FFFFFFF)*1024*1024, "B", true)
 	default:
 		mul := uint64(1024 * 1024)
 		if t.Size&0x8000 != 0 {
 			mul = 1024
 		}
-		return kgmt(uint64(t.Size&0x7FFF) * mul)
+		return utils.AutoFormatSize(float64(t.Size&0x7FFF)*float64(mul), "B", true)
 	}
 }
 

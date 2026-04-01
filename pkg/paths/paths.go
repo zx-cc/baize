@@ -35,8 +35,12 @@ const (
 	ProcKernelOstype    = "/proc/sys/kernel/ostype"
 	ProcKernelOsrelease = "/proc/sys/kernel/osrelease"
 	ProcKernelVersion   = "/proc/sys/kernel/version"
+	ProcNetBonding      = "/proc/net/bonding"
 
 	SysBusPciDevices     = "/sys/bus/pci/devices"
 	SysModule            = "/sys/module"
 	SysFirmwareDmiTables = "/sys/firmware/dmi/tables"
+	SysClassHwmon        = "/sys/class/hwmon"
+	SysDevicesSystemCPU  = "/sys/devices/system/cpu"
+	SysClassNet          = "/sys/class/net"
 )

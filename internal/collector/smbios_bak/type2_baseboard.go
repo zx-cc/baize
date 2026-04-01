@@ -20,8 +20,8 @@ type Type2BaseBoard struct {
 }
 
 func parseType2BaseBoard(t *Table) (*Type2BaseBoard, error) {
-	if t.Type != 2 {
-		return nil, fmt.Errorf("%s:%d", ErrInvalidTableType, t.Type)
+	if t.Header.Type != 2 {
+		return nil, fmt.Errorf("%s:%d", ErrInvalidTableType, t.Header.Type)
 	}
 	if t.Header.Length < 8 {
 		return nil, fmt.Errorf("%s: baseboard info table must be at least %d bytes", ErrInvalidTableLength, 8)
