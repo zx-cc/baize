@@ -25,7 +25,7 @@ type Memory struct {
 	HugeTlb               string               `json:"huge_tlb,omitempty"`
 	Diagnose              string               `json:"diagnose,omitempty" name:"Diagnose" output:"both" color:"Diagnose"`
 	DiagnoseDetail        string               `json:"diagnose_detail,omitempty" name:"Diagnose Detail" output:"both" color:"Diagnose"`
-	EdacSlots             string               `json:"slots,omitempty"`
+	EdacSlots             string               `json:"edac_slots,omitempty"`
 	EdacMemorySize        string               `json:"edac_memory_size,omitempty"`
 	PhysicalMemoryEntries []*SmbiosMemoryEntry `json:"physical_memory_entries,omitempty" name:"memories" output:"detail"`
 	EdacMemoryEntries     []*EdacMemoryEntry   `json:"edac_memory_entries,omitempty"`

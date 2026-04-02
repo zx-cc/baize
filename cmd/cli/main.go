@@ -3,8 +3,7 @@ package main
 import (
 	"encoding/json"
 
-	"github.com/zx-cc/baize/internal/collector/memory"
-	"github.com/zx-cc/baize/internal/collector/network"
+	"github.com/zx-cc/baize/internal/collector/smart"
 )
 
 type collector interface {
@@ -12,11 +11,21 @@ type collector interface {
 }
 
 func main() {
-	n := network.New()
-	m := memory.New()
+	m, err := smart.GetSmartctlData(smart.Option{
+		Type:   "megaraid",
+		CtrlID: "0",
+		Did:    "2",
+	})
 
-	print(n)
-	print(m)
+	if err != nil {
+		panic(err)
+	}
+	res, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+
+	println(string(res))
 }
 
 func print(n collector) {

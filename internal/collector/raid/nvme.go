@@ -1,0 +1,50 @@
+package raid
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/zx-cc/baize/pkg/utils"
+)
+
+func (n *nvme) collect() error {
+	busPath := filepath.Join(sysfsDevicesPath, n.PCIe.PCIAddr, "nvme")
+	dirs, err := os.ReadDir(busPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", busPath, err)
+	}
+
+	if len(dirs) != 1 {
+		return fmt.Errorf("expected 1 directory in %s, got %d", busPath, len(dirs))
+	}
+
+	var errs []error
+	dirName := dirs[0].Name()
+	n.physicalDrive.MappingFile = "/dev/" + dirName
+	err = n.physicalDrive.collectSMARTData(SMARTConfig{Option: "nvme", BlockDevice: n.physicalDrive.MappingFile})
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	namespacePath := filepath.Join(busPath, dirName)
+	namespaceDirs, err := os.ReadDir(namespacePath)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("read %s: %w", namespacePath, err))
+		return utils.CombineErrors(errs)
+	}
+
+	for _, dir := range namespaceDirs {
+		name := dir.Name()
+		if !strings.HasPrefix(name, "nvme") {
+			continue
+		}
+		n.Namespaces = append(n.Namespaces, "/dev/"+name)
+	}
+
+	return utils.CombineErrors(errs)
+}

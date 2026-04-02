@@ -111,8 +111,9 @@ func (nf *NetInterface) collectEthtoolDriver() error {
 
 func isPhysicalPort(name string) bool {
 	devicePath := filepath.Join(paths.SysClassNet, name, "device")
+	physfn := filepath.Join(paths.SysClassNet, name, "device", "physfn")
 
-	if !paths.Exists(devicePath) {
+	if !paths.Exists(devicePath) || paths.Exists(physfn) {
 		return false
 	}
 

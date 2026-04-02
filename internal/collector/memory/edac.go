@@ -19,7 +19,7 @@ func (m *Memory) collectFromEdac() error {
 		return err
 	}
 
-	dimmDirs, err := filepath.Glob(filepath.Join(paths.SysBusEdacMC, "dimm*"))
+	dimmDirs, err := filepath.Glob(filepath.Join(paths.SysBusEdacMC, "mc*", "dimm*"))
 	if err != nil {
 		return err
 	}

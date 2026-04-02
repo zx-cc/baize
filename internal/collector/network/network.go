@@ -21,10 +21,24 @@ func New() *Network {
 }
 
 func (n *Network) Collect() error {
-	return nil
+	errs := make([]error, 0, 4)
+
+	if err := n.collectNetFromSysfs(); err != nil {
+		errs = append(errs, err)
+	}
+
+	if err := n.collectNIC(); err != nil {
+		errs = append(errs, err)
+	}
+
+	if err := n.collectBondFromProc(); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
 }
 
-var skipTarget = []string{"lo", "loop", "bonding_master"}
+var skipTarget = []string{"lo", "loop", "bonding_masters"}
 
 func (n *Network) collectNetFromSysfs() error {
 	netDirs, err := os.ReadDir(paths.SysClassNet)
@@ -42,6 +56,10 @@ func (n *Network) collectNetFromSysfs() error {
 		if slices.Contains(skipTarget, name) {
 			continue
 		}
+
+		// if name == "lo" || strings.HasPrefix(name, "loop") || name == "bonding_master" {
+		// 	continue
+		// }
 
 		names = append(names, name)
 	}
@@ -87,6 +105,8 @@ func (n *Network) collectNIC() error {
 		if err := phy.collectPhyFromPCI(bus); err != nil {
 			errs = append(errs, err)
 		}
+
+		n.Phy = append(n.Phy, phy)
 	}
 
 	return errors.Join(errs...)

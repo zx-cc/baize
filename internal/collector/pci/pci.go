@@ -45,7 +45,7 @@ func GetByBus(bus string) (*PCI, error) {
 
 	collectBasicInfo(p)
 	p.Driver = collectDriverInfo(devicePath)
-	p.Link = collectLinkInfo(bus)
+	p.Link = collectLinkInfo(devicePath)
 
 	return p, nil
 }
@@ -71,18 +71,18 @@ func normalizeBusAddr(bus string) string {
 func collectBasicInfo(p *PCI) {
 	fields := []struct {
 		name   string
-		target string
+		target *string
 	}{
-		{name: "vendor", target: p.VendorID},
-		{name: "device", target: p.DeviceID},
-		{name: "subsystem_vendor", target: p.SubVendorID},
-		{name: "subsystem_device", target: p.SubDeviceID},
-		{name: "Revision", target: p.Revision},
-		{name: "class", target: p.ClassID},
+		{name: "vendor", target: &p.VendorID},
+		{name: "device", target: &p.DeviceID},
+		{name: "subsystem_vendor", target: &p.SubVendorID},
+		{name: "subsystem_device", target: &p.SubDeviceID},
+		{name: "Revision", target: &p.Revision},
+		{name: "class", target: &p.ClassID},
 	}
 
 	for _, field := range fields {
-		file := filepath.Join(paths.SysBusPciDevices, field.name)
+		file := filepath.Join(paths.SysBusPciDevices, p.Bus, field.name)
 		content, err := utils.ReadLine(file)
 		if err != nil {
 			continue
@@ -91,11 +91,11 @@ func collectBasicInfo(p *PCI) {
 		content = strings.TrimPrefix(content, "0x")
 		if field.name == "class" {
 			if len(content) >= 4 {
-				field.target = content[:4]
+				*field.target = content[:4]
 				p.SubClass = content[2:4]
 			}
 		} else {
-			field.target = content
+			*field.target = content
 		}
 	}
 
@@ -242,17 +242,17 @@ func collectLinkInfo(path string) *Link {
 	link := &Link{}
 	fields := []struct {
 		name   string
-		target string
+		target *string
 	}{
-		{name: "max_link_speed", target: link.MaxSpeed},
-		{name: "max_link_width", target: link.MaxWidth},
-		{name: "current_link_speed", target: link.CurrSpeed},
-		{name: "current_link_width", target: link.CurrWidth},
+		{name: "max_link_speed", target: &link.MaxSpeed},
+		{name: "max_link_width", target: &link.MaxWidth},
+		{name: "current_link_speed", target: &link.CurrSpeed},
+		{name: "current_link_width", target: &link.CurrWidth},
 	}
 
 	for _, field := range fields {
 		if content, err := utils.ReadLine(filepath.Join(path, field.name)); err == nil {
-			field.target = content
+			*field.target = content
 		}
 	}
 

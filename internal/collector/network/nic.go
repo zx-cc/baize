@@ -3,6 +3,7 @@ package network
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"strings"
 
 	"github.com/zx-cc/baize/internal/collector/pci"
@@ -11,12 +12,27 @@ import (
 )
 
 func (p *PhyInterface) collectPhyFromPCI(bus string) error {
+	errs := make([]error, 0, 4)
 	pciInfo, err := pci.GetByBus(bus)
 	if err != nil {
-		return err
+		errs = append(errs, err)
 	}
+
 	p.PCI = *pciInfo
 
+	if err := p.collectEthtoolChannel(); err != nil {
+		errs = append(errs, err)
+	}
+
+	if err := p.collectEthtoolRingBuffer(); err != nil {
+		errs = append(errs, err)
+	}
+
+	if err := p.collectLLDPNeighbors(); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
 }
 
 const (
@@ -31,7 +47,7 @@ const (
 	fieldPpvidEnabled    = "ppvid.enabled"
 )
 
-func (p *PhyInterface) collectLLDPNeighbors(nic string) error {
+func (p *PhyInterface) collectLLDPNeighbors() error {
 	data, err := shell.Run("lldpctl", p.DeviceName, "-f", "keyvalue")
 	if err != nil {
 		return err
@@ -40,7 +56,7 @@ func (p *PhyInterface) collectLLDPNeighbors(nic string) error {
 	var prefixBuilder strings.Builder
 	prefixBuilder.Grow(7 + len(nic))
 	prefixBuilder.WriteString("lldp.")
-	prefixBuilder.WriteString(nic)
+	prefixBuilder.WriteString(p.DeviceName)
 	prefixBuilder.WriteByte('.')
 	prefix := prefixBuilder.String()
 	prefixLen := len(prefix)
@@ -57,15 +73,11 @@ func (p *PhyInterface) collectLLDPNeighbors(nic string) error {
 			key = key[prefixLen:]
 		}
 
-		setLLDPField(&res, strings.TrimSpace(key), strings.TrimSpace(value))
+		setLLDPField(&p.LLDP, strings.TrimSpace(key), strings.TrimSpace(value))
 
 	}
 
-	if err := scanner.Err(); err != nil {
-		return res, err
-	}
-
-	return res, nil
+	return scanner.Err()
 }
 
 func setLLDPField(l *LLDP, key, value string) {
@@ -104,7 +116,7 @@ type sectionFieldSetter struct {
 	currentSetter *string
 }
 
-func applySectionFields(data []byte, source []sectionFieldSetter) {
+func applySectionFields(data []byte, source []sectionFieldSetter) error {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	section := sectionPreset
 
@@ -112,11 +124,11 @@ func applySectionFields(data []byte, source []sectionFieldSetter) {
 		line := scanner.Text()
 
 		if len(line) != 0 {
-			switch line[0] {
-			case 'P':
+			switch line[:2] {
+			case "Pr":
 				section = sectionPreset
 				continue
-			case 'C':
+			case "Cu":
 				section = sectionCurrent
 				continue
 			}
@@ -145,39 +157,34 @@ func applySectionFields(data []byte, source []sectionFieldSetter) {
 			}
 		}
 	}
+
+	return scanner.Err()
 }
 
-func collectEthtoolRingBuffer(nic string) RingBuffer {
-	output := execute.Command(ethtool, "-g", nic)
-	if output.AsError() != nil {
-		return RingBuffer{}
+func (p *PhyInterface) collectEthtoolRingBuffer() error {
+	output, err := shell.Run("ethtool", "-g", p.DeviceName)
+	if err != nil {
+		return nil
 	}
 
-	var res RingBuffer
-
-	applySectionFields(output.Stdout, []sectionFieldSetter{
-		{key: "RX", maxSetter: &res.MaxRX, currentSetter: &res.CurrentRX},
-		{key: "TX", maxSetter: &res.MaxTX, currentSetter: &res.CurrentTX},
+	return applySectionFields(output, []sectionFieldSetter{
+		{key: "RX", maxSetter: &p.RingBuffer.MaxRX, currentSetter: &p.RingBuffer.CurrentRX},
+		{key: "TX", maxSetter: &p.RingBuffer.MaxTX, currentSetter: &p.RingBuffer.CurrentTX},
 	})
-
-	return res
 }
 
-func collectEthtoolChannel(nic string) Channel {
-	output := execute.Command(ethtool, "-l", nic)
-	if output.AsError() != nil {
-		return Channel{}
+func (p *PhyInterface) collectEthtoolChannel() error {
+	output, err := shell.Run("ethtool", "-l", p.DeviceName)
+	if err != nil {
+		return nil
 	}
 
-	var res Channel
-	applySectionFields(
-		output.Stdout,
+	return applySectionFields(
+		output,
 		[]sectionFieldSetter{
-			{key: "Rx", maxSetter: &res.MaxRX, currentSetter: &res.CurrentRX},
-			{key: "Tx", maxSetter: &res.MaxTX, currentSetter: &res.CurrentTX},
-			{key: "Combined", maxSetter: &res.MaxCombined, currentSetter: &res.CurrentCombined},
+			{key: "Rx", maxSetter: &p.Channel.MaxRX, currentSetter: &p.Channel.CurrentRX},
+			{key: "Tx", maxSetter: &p.Channel.MaxTX, currentSetter: &p.Channel.CurrentTX},
+			{key: "Combined", maxSetter: &p.Channel.MaxCombined, currentSetter: &p.Channel.CurrentCombined},
 		},
 	)
-
-	return res
 }

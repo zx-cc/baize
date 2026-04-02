@@ -236,8 +236,9 @@ func (db *pciDatabase) parseClassLine(line string, currentClass **classInfo, cur
 		classID := strings.ToLower(line[2:4])
 		name := strings.TrimSpace(line[4:])
 		class := &classInfo{
-			ID:   classID,
-			Name: name,
+			ID:         classID,
+			Name:       name,
+			Subclasses: make(map[string]*subclassInfo),
 		}
 		db.classes[classID] = class
 		*currentClass = class

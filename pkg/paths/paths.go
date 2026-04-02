@@ -44,5 +44,6 @@ const (
 	SysClassHwmon        = "/sys/class/hwmon"
 	SysDevicesSystemCPU  = "/sys/devices/system/cpu"
 	SysClassNet          = "/sys/class/net"
-	SysBusEdacMC         = "/sys/bus/edac/mc"
+	SysBusEdacMC         = "/sys/bus/edac/devices/mc"
+	SysClassDrm          = "/sys/class/drm"
 )
