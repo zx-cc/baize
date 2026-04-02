@@ -149,6 +149,7 @@ type physicalDrive struct {
 	Product            string `json:"product,omitempty"`
 	ModelName          string `json:"model_name,omitempty"`
 	SN                 string `json:"sn,omitempty"`
+	PN                 string `json:"part_number,omitempty"`
 	WWN                string `json:"wwn,omitempty"`
 	FirmwareVersion    string `json:"firmware_version,omitempty"`
 	MediaType          string `json:"media_type,omitempty"`

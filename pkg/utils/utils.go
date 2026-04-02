@@ -2,11 +2,16 @@ package utils
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+
+	"github.com/zx-cc/baize/pkg/paths"
+	"github.com/zx-cc/baize/pkg/shell"
 )
 
 // Scanner represents scanner for reading lines from an io.Reader.
@@ -211,4 +216,110 @@ func ReadLinkBase(path string) (string, error) {
 	}
 
 	return filepath.Base(link), nil
+}
+
+func GetBlockByLsblk() []string {
+	output, err := shell.Run("lsblk", "-d", "-o", "NAME", "-n")
+	if err != nil {
+		return nil
+	}
+
+	lines := bytes.Split(output, []byte("\n"))
+	blocks := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		blocks = append(blocks, string(line))
+	}
+	return blocks
+}
+
+const (
+	wwnPrefix  = "wwn-"
+	partSuffix = "-part"
+)
+
+func GetBlockByWWN(wwn string) string {
+	files, err := os.ReadDir(paths.DevDiskByID)
+	if err != nil {
+		return ""
+	}
+
+	for _, f := range files {
+
+		fn := f.Name()
+		if !strings.HasPrefix(fn, wwnPrefix) || strings.Contains(fn, partSuffix) {
+			continue
+		}
+
+		if idx := strings.IndexByte(fn, '-'); idx != -1 {
+			if wwn != fn[idx+1:] {
+				continue
+			}
+		}
+
+		if value, err := ReadLinkBase(fn); err == nil {
+			return value
+		}
+	}
+
+	return ""
+}
+
+func GetBlockFromSysfs() []string {
+	devices, err := os.ReadDir(paths.SysBlock)
+	if err != nil {
+		return GetBlockByLsblk()
+	}
+
+	blocks := make([]string, 0, len(devices))
+	for _, device := range devices {
+		name := device.Name()
+		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "md") {
+			continue
+		}
+		blocks = append(blocks, name)
+	}
+
+	return blocks
+}
+
+// IsEmpty 判断 reflect.Value 是否为空
+func IsEmpty(v reflect.Value) bool {
+	// 检查 Value 是否有效
+	if !v.IsValid() {
+		return true
+	}
+
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		return v.IsNil()
+	case reflect.Slice, reflect.Map, reflect.Chan:
+		return v.IsNil() || v.Len() == 0
+	case reflect.Array:
+		return v.Len() == 0
+	case reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Struct:
+		// 遍历结构体所有字段，判断是否全为空
+		for i := 0; i < v.NumField(); i++ {
+			if !IsEmpty(v.Field(i)) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }

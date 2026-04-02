@@ -2,13 +2,15 @@ package raid
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/zx-cc/baize/internal/collector/smart"
+	"github.com/zx-cc/baize/pkg/paths"
 	"github.com/zx-cc/baize/pkg/shell"
 	"github.com/zx-cc/baize/pkg/utils"
 )
@@ -23,17 +25,13 @@ type adaptecController struct {
 	cid  string
 }
 
-type field struct {
+type collectField struct {
 	key   string
 	value *string
 }
 
-func collectAdaptec(ctx context.Context, i int, c *controller) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	arcCtr := &adaptecController{
+func collectAdaptec(i int, c *controller) error {
+	ctrl := &adaptecController{
 		ctrl: c,
 	}
 
@@ -43,21 +41,18 @@ func collectAdaptec(ctx context.Context, i int, c *controller) error {
 	}
 
 	if bytes.HasPrefix(bytes.TrimSpace(output), []byte("HP")) {
-		return collectHPE(ctx, i, c)
+		return collectHPE(i, c)
 	}
 
-	if !arcCtr.isFound(i) {
-		return fmt.Errorf("adaptec controller %s not found", c.PCIe.PCIAddr)
+	if !ctrl.hasController(i) {
+		return fmt.Errorf("adaptec controller %s not found", c.PCIe.Bus)
 	}
 
-	err = arcCtr.collect(ctx)
-	arcCtr.associate()
-
-	return err
+	return ctrl.collect()
 }
 
-func (ac *adaptecController) isFound(i int) bool {
-	sn, err := os.ReadFile(sysfsDevicesPath + ac.ctrl.PCIe.PCIAddr + snFile)
+func (ac *adaptecController) hasController(i int) bool {
+	sn, err := os.ReadFile(filepath.Join(paths.SysBusPciDevices, ac.ctrl.PCIe.Bus, snFile))
 	if err != nil {
 		return false
 	}
@@ -76,12 +71,8 @@ func (ac *adaptecController) isFound(i int) bool {
 	return false
 }
 
-func arcconfCmd(ctx context.Context, args ...string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	output, err := shell.RunWithContext(ctx, arcconf+" GETCONFIG", args...)
+func arcconfRun(args ...string) ([]byte, error) {
+	output, err := shell.Run(arcconf+" GETCONFIG", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -89,38 +80,34 @@ func arcconfCmd(ctx context.Context, args ...string) ([]byte, error) {
 	return output, nil
 }
 
-func (ac *adaptecController) collect(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (ac *adaptecController) collect() error {
 
-	var errs []error
-	if err := ac.parseCtrlCard(ctx); err != nil {
+	errs := make([]error, 0, 3)
+
+	if err := ac.parseCtrlCard(); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := ac.collectCtrlPD(ctx); err != nil {
+	if err := ac.collectCtrlPD(); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := ac.collectCtrlLD(ctx); err != nil {
+	if err := ac.collectCtrlLD(); err != nil {
 		errs = append(errs, err)
 	}
+
+	ac.associate()
 
 	return errors.Join(errs...)
 }
 
-func (ac *adaptecController) parseCtrlCard(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	data, err := arcconfCmd(ctx, ac.cid, "AD")
+func (ac *adaptecController) parseCtrlCard() error {
+	data, err := arcconfRun(ac.cid, "AD")
 	if err != nil {
 		return err
 	}
 
-	ctrlFields := []field{
+	ctrlFields := []collectField{
 		{"Controller Status", &ac.ctrl.ControllerStatus},
 		{"Controller Mode", &ac.ctrl.CurrentPersonality},
 		{"Controller Model", &ac.ctrl.ProductName},
@@ -131,8 +118,8 @@ func (ac *adaptecController) parseCtrlCard(ctx context.Context) error {
 
 	scanner := utils.NewScanner(bytes.NewReader(data))
 	for {
-		k, v, hasMore := scanner.ParseLine(":")
-		if !hasMore {
+		k, v, isEnd := scanner.ParseLine(":")
+		if isEnd {
 			break
 		}
 		if v == "" {
@@ -158,12 +145,8 @@ func (ac *adaptecController) parseCtrlCard(ctx context.Context) error {
 	return scanner.Err()
 }
 
-func (ac *adaptecController) collectCtrlPD(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	data, err := arcconfCmd(ctx, ac.cid, "PD")
+func (ac *adaptecController) collectCtrlPD() error {
+	data, err := arcconfRun(ac.cid, "PD")
 	if err != nil {
 		return err
 	}
@@ -174,7 +157,7 @@ func (ac *adaptecController) collectCtrlPD(ctx context.Context) error {
 		if !bytes.Contains(pd, []byte("Device is a Hard drive")) {
 			continue
 		}
-		if err := ac.parseCtrlPD(ctx, pd); err != nil {
+		if err := ac.parseCtrlPD(pd); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -182,32 +165,30 @@ func (ac *adaptecController) collectCtrlPD(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (ac *adaptecController) parseCtrlPD(ctx context.Context, data []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	res := &physicalDrive{}
-	pdFields := []field{
-		{"State", &res.State},
-		{"Block Size", &res.PhysicalSectorSize},
-		{"Transfer Speed", &res.LinkSpeed},
-		{"Vendor", &res.Vendor},
-		{"Model", &res.ModelName},
-		{"Firmware", &res.FirmwareVersion},
-		{"Serial Number", &res.SN},
-		{"World-wide name", &res.WWN},
-		{"Write cache", &res.WriteCache},
-		{"S.M.A.R.T.", &res.SmartAlert},
+func (ac *adaptecController) parseCtrlPD(data []byte) error {
+	pd := &physicalDrive{}
+	pdFields := []collectField{
+		{"State", &pd.State},
+		{"Block Size", &pd.PhysicalSectorSize},
+		{"Transfer Speed", &pd.LinkSpeed},
+		{"Vendor", &pd.Vendor},
+		{"Model", &pd.ModelName},
+		{"Firmware", &pd.FirmwareVersion},
+		{"Serial Number", &pd.SN},
+		{"World-wide name", &pd.WWN},
+		{"Write cache", &pd.WriteCache},
+		{"S.M.A.R.T.", &pd.SmartAlert},
 	}
 
 	errs := make([]error, 0, 2)
 
 	scanner := utils.NewScanner(bytes.NewReader(data))
 	for {
-		k, v, hasMore := scanner.ParseLine(":")
-		if !hasMore {
+		k, v, isEnd := scanner.ParseLine(":")
+		if isEnd {
 			break
 		}
+
 		if v == "" {
 			continue
 		}
@@ -215,9 +196,9 @@ func (ac *adaptecController) parseCtrlPD(ctx context.Context, data []byte) error
 		if k == "Reported Location" {
 			val := strings.Split(v, ",")
 			if len(val) >= 2 {
-				res.EnclosureId = strings.Fields(val[0])[1]
-				res.SlotId = strings.Fields(val[1])[1]
-				res.Location = fmt.Sprintf("/c%s/e%s/s%s", ac.cid, res.EnclosureId, res.SlotId)
+				pd.EnclosureId = strings.Fields(val[0])[1]
+				pd.SlotId = strings.Fields(val[1])[1]
+				pd.Location = fmt.Sprintf("/c%s/e%s/s%s", ac.cid, pd.EnclosureId, pd.SlotId)
 			}
 			continue
 		}
@@ -234,25 +215,21 @@ func (ac *adaptecController) parseCtrlPD(ctx context.Context, data []byte) error
 	}
 
 	cid, _ := strconv.Atoi(ac.cid)
-	if err := res.collectSMARTData(SMARTConfig{
-		Option:      "aacraid",
-		BlockDevice: "/dev/" + utils.GetOneBlock(),
-		DeviceID:    fmt.Sprintf("%d,%s,%s", cid, res.EnclosureId, res.SlotId),
-	}); err != nil {
+	err := pd.getSMARTData(smart.Option{
+		Type:  "aacraid",
+		Block: defaultBlock,
+		Did:   fmt.Sprintf("%d,%s,%s", cid, pd.EnclosureId, pd.SlotId)})
+	if err != nil {
 		errs = append(errs, err)
 	}
 
-	ac.ctrl.PhysicalDrives = append(ac.ctrl.PhysicalDrives, res)
+	ac.ctrl.PhysicalDrives = append(ac.ctrl.PhysicalDrives, pd)
 
 	return errors.Join(errs...)
 }
 
-func (ac *adaptecController) collectCtrlLD(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	data, err := arcconfCmd(ctx, ac.cid, "LD")
+func (ac *adaptecController) collectCtrlLD() error {
+	data, err := arcconfRun(ac.cid, "LD")
 	if err != nil {
 		return err
 	}
@@ -264,7 +241,7 @@ func (ac *adaptecController) collectCtrlLD(ctx context.Context) error {
 		if !bytes.Contains(ld, []byte("Logical Device number")) {
 			continue
 		}
-		if err := ac.parseCtrlLD(ctx, ld); err != nil {
+		if err := ac.parseCtrlLD(ld); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -272,28 +249,24 @@ func (ac *adaptecController) collectCtrlLD(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (ac *adaptecController) parseCtrlLD(ctx context.Context, data []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	res := &logicalDrive{}
-	ldFields := []field{
-		{"Logical Device name", &res.Location},
-		{"RAID Level", &res.Type},
-		{"State of Logical Drive", &res.State},
-		{"Size", &res.Capacity},
+func (ac *adaptecController) parseCtrlLD(data []byte) error {
+	ld := &logicalDrive{}
+	ldFields := []collectField{
+		{"Logical Device name", &ld.Location},
+		{"RAID Level", &ld.Type},
+		{"State of Logical Drive", &ld.State},
+		{"Size", &ld.Capacity},
 	}
 
 	scanner := utils.NewScanner(bytes.NewReader(data))
 	for {
-		k, v, hasMore := scanner.ParseLine(":")
-		if !hasMore {
+		k, v, isEnd := scanner.ParseLine(":")
+		if isEnd {
 			break
 		}
 		if strings.HasPrefix(k, "Logical Device number") {
 			parts := strings.Fields(k)
-			res.VD = parts[len(parts)-1]
+			ld.VD = parts[len(parts)-1]
 			continue
 		}
 
@@ -303,7 +276,7 @@ func (ac *adaptecController) parseCtrlLD(ctx context.Context, data []byte) error
 
 		if strings.HasPrefix(k, "Segment ") {
 			parts := strings.Fields(v)
-			res.pds = append(res.pds, parts[len(parts)-1])
+			ld.pds = append(ld.pds, parts[len(parts)-1])
 			continue
 		}
 
@@ -314,7 +287,7 @@ func (ac *adaptecController) parseCtrlLD(ctx context.Context, data []byte) error
 		}
 	}
 
-	ac.ctrl.LogicalDrives = append(ac.ctrl.LogicalDrives, res)
+	ac.ctrl.LogicalDrives = append(ac.ctrl.LogicalDrives, ld)
 
 	return scanner.Err()
 }

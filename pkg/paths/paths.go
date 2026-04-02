@@ -22,7 +22,9 @@ func Exists(path string) bool {
 }
 
 const (
-	DevMem     = "/dev/mem"
+	DevMem      = "/dev/mem"
+	DevDiskByID = "/dev/disk/by-id"
+
 	LibModules = "/lib/modules"
 
 	EtcOsRelease     = "/etc/os-release"
@@ -37,6 +39,7 @@ const (
 	ProcKernelVersion   = "/proc/sys/kernel/version"
 	ProcNetBonding      = "/proc/net/bonding"
 	ProcMeminfo         = "/proc/meminfo"
+	ProcMdstat          = "/proc/mdstat"
 
 	SysBusPciDevices     = "/sys/bus/pci/devices"
 	SysModule            = "/sys/module"
@@ -46,4 +49,5 @@ const (
 	SysClassNet          = "/sys/class/net"
 	SysBusEdacMC         = "/sys/bus/edac/devices/mc"
 	SysClassDrm          = "/sys/class/drm"
+	SysBlock             = "/sys/block"
 )

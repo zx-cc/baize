@@ -2,13 +2,13 @@ package raid
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/zx-cc/baize/internal/collector/smart"
 	"github.com/zx-cc/baize/pkg/shell"
 	"github.com/zx-cc/baize/pkg/utils"
 )
@@ -35,27 +35,20 @@ var (
 	intelOnece sync.Once
 )
 
-func collectIntel(ctx context.Context, i int, c *controller) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	return isFoundIntel(ctx, c)
+func collectIntel(i int, c *controller) error {
+	return isFoundIntel(c)
 }
 
-func isFoundIntel(ctx context.Context, c *controller) error {
+func isFoundIntel(c *controller) error {
 	var err error
-	if err = ctx.Err(); err != nil {
-		return err
-	}
 
 	intelOnece.Do(func() {
-		err = intelCtrls.collect(ctx)
+		err = intelCtrls.collect()
 		intelCtrls.associate()
 	})
 
 	for _, ctr := range intelCtrls.ctrl {
-		if ctr.pciAddr == c.PCIe.PCIAddr {
+		if ctr.pciAddr == c.PCIe.Bus {
 			ctr.ctrl.PCIe = c.PCIe
 			*c = *ctr.ctrl
 		}
@@ -64,41 +57,29 @@ func isFoundIntel(ctx context.Context, c *controller) error {
 	return err
 }
 
-func (ic *intelController) collect(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func (ic *intelController) collect() error {
 	errs := make([]error, 0, 3)
-	if err := ic.collectCtrlCard(ctx); err != nil {
+	if err := ic.collectCtrlCard(); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := ic.collectCtrlPD(ctx); err != nil {
+	if err := ic.collectCtrlPD(); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := ic.collectCtrlLD(ctx); err != nil {
+	if err := ic.collectCtrlLD(); err != nil {
 		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
 }
 
-func mdadmCMD(ctx context.Context, args ...string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	return shell.RunWithContext(ctx, mdadm, args...)
+func mdadmRun(args ...string) ([]byte, error) {
+	return shell.Run(mdadm, args...)
 }
 
-func (ic *intelController) collectCtrlCard(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	data, err := mdadmCMD(ctx, "--detail-platform")
+func (ic *intelController) collectCtrlCard() error {
+	data, err := mdadmRun("--detail-platform")
 	if err != nil {
 		return err
 	}
@@ -107,7 +88,7 @@ func (ic *intelController) collectCtrlCard(ctx context.Context) error {
 	var errs []error
 
 	for ctrl := range ctrls {
-		if err := ic.parseCtrlCard(ctx, bytes.TrimSpace(ctrl)); err != nil {
+		if err := ic.parseCtrlCard(bytes.TrimSpace(ctrl)); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -115,10 +96,7 @@ func (ic *intelController) collectCtrlCard(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (ic *intelController) parseCtrlCard(ctx context.Context, data []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (ic *intelController) parseCtrlCard(data []byte) error {
 
 	if len(data) == 0 {
 		return nil
@@ -130,8 +108,8 @@ func (ic *intelController) parseCtrlCard(ctx context.Context, data []byte) error
 
 	scanner := utils.NewScanner(bytes.NewReader(data))
 	for {
-		k, v, hasMore := scanner.ParseLine(":")
-		if !hasMore {
+		k, v, isEnd := scanner.ParseLine(":")
+		if isEnd {
 			break
 		}
 
@@ -165,10 +143,7 @@ func (ic *intelController) parseCtrlCard(ctx context.Context, data []byte) error
 	return scanner.Err()
 }
 
-func (ic *intelController) collectCtrlPD(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (ic *intelController) collectCtrlPD() error {
 
 	pds := utils.GetBlockByLsblk()
 	if len(pds) == 0 {
@@ -177,7 +152,7 @@ func (ic *intelController) collectCtrlPD(ctx context.Context) error {
 
 	errs := make([]error, 0, len(pds))
 	for _, pd := range pds {
-		if err := ic.parseCtrlPD(ctx, pd); err != nil {
+		if err := ic.parseCtrlPD(pd); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -185,26 +160,21 @@ func (ic *intelController) collectCtrlPD(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (ic *intelController) parseCtrlPD(ctx context.Context, pd string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (ic *intelController) parseCtrlPD(pd string) error {
 
 	res := &physicalDrive{
 		MappingFile: "/dev/" + pd,
 	}
 
-	err := res.collectSMARTData(SMARTConfig{Option: "jbod", BlockDevice: res.MappingFile})
+	err := res.getSMARTData(smart.Option{
+		Type: "jbod", Block: res.MappingFile})
 
 	ic.pds = append(ic.pds, res)
 
 	return err
 }
 
-func (ic *intelController) collectCtrlLD(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (ic *intelController) collectCtrlLD() error {
 
 	file, err := os.Open(procMdstat)
 	if err != nil {
@@ -215,15 +185,15 @@ func (ic *intelController) collectCtrlLD(ctx context.Context) error {
 	var errs []error
 	scanner := utils.NewScanner(file)
 	for {
-		k, v, hasMore := scanner.ParseLine(":")
-		if !hasMore {
+		k, v, isEnd := scanner.ParseLine(":")
+		if isEnd {
 			break
 		}
 		if v == "" || !strings.HasPrefix(v, "active") {
 			continue
 		}
 
-		if err := ic.parseCtrlLD(ctx, k); err != nil {
+		if err := ic.parseCtrlLD(k); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -231,21 +201,18 @@ func (ic *intelController) collectCtrlLD(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (ic *intelController) parseCtrlLD(ctx context.Context, md string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (ic *intelController) parseCtrlLD(md string) error {
 
 	ld := &logicalDrive{
 		MappingFile: "/dev/" + md,
 	}
 
-	data, err := mdadmCMD(ctx, "--detail", ld.MappingFile)
+	data, err := mdadmRun("--detail", ld.MappingFile)
 	if err != nil {
 		return err
 	}
 
-	fields := []field{
+	fields := []collectField{
 		{"Raid Level", &ld.Type},
 		{"Array Size", &ld.Capacity},
 		{"Total Devices", &ld.NumberOfDrives},
@@ -256,8 +223,8 @@ func (ic *intelController) parseCtrlLD(ctx context.Context, md string) error {
 
 	scanner := utils.NewScanner(bytes.NewReader(data))
 	for {
-		k, v, hasMore := scanner.ParseLine(":")
-		if !hasMore {
+		k, v, isEnd := scanner.ParseLine(":")
+		if isEnd {
 			break
 		}
 

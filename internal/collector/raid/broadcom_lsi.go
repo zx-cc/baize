@@ -2,13 +2,13 @@ package raid
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/zx-cc/baize/internal/collector/smart"
 	"github.com/zx-cc/baize/pkg/shell"
 	"github.com/zx-cc/baize/pkg/utils"
 )
@@ -24,27 +24,24 @@ type lsiController struct {
 
 //var pdRegexp = regexp.MustCompile(`^(.+):(\d+)`)
 
-func collectLSI(ctx context.Context, i int, c *controller) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func collectLSI(i int, c *controller) error {
 
 	lsiCtr := &lsiController{
 		ctrl: c,
 	}
 
 	if !lsiCtr.isFound(i) {
-		return fmt.Errorf("lsi controller %s not found", c.PCIe.PCIAddr)
+		return fmt.Errorf("lsi controller %s not found", c.PCIe.Bus)
 	}
 
-	err := lsiCtr.collect(ctx)
+	err := lsiCtr.collect()
 	lsiCtr.associate()
 
 	return err
 }
 
 func (lc *lsiController) isFound(i int) bool {
-	pcieAddr := lc.ctrl.PCIe.PCIAddr[2 : len(lc.ctrl.PCIe.PCIAddr)-3]
+	pcieAddr := lc.ctrl.PCIe.Bus[2 : len(lc.ctrl.PCIe.Bus)-3]
 	for j := 0; j < i+1; j++ {
 		stdout, err := shell.Run(storcli, "/c"+strconv.Itoa(j), "show")
 		if err != nil {
@@ -60,20 +57,13 @@ func (lc *lsiController) isFound(i int) bool {
 	return false
 }
 
-func storcliCmd(ctx context.Context, args ...string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	return shell.RunWithContext(ctx, storcli, args...)
+func storcliRun(args ...string) ([]byte, error) {
+	return shell.Run(storcli, args...)
 }
 
-func (lc *lsiController) collect(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) collect() error {
 
-	data, err := storcliCmd(ctx, "/c"+lc.cid, "show", "J")
+	data, err := storcliRun("/c"+lc.cid, "show", "J")
 	if err != nil {
 		return err
 	}
@@ -84,36 +74,33 @@ func (lc *lsiController) collect(ctx context.Context) error {
 	}
 
 	errs := make([]error, 0, 5)
-	if err := lc.parseCtrlCard(ctx); err != nil {
+	if err := lc.parseCtrlCard(); err != nil {
 		errs = append(errs, err)
 	}
 
 	res := js.Controllers[0].ResponseData
-	if err := lc.collectCtrlPD(ctx, res.PDList); err != nil {
+	if err := lc.collectCtrlPD(res.PDList); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := lc.collectCtrlLD(ctx, res.VDList); err != nil {
+	if err := lc.collectCtrlLD(res.VDList); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := lc.collectCtrlEnclosure(ctx, res.EnclosureList); err != nil {
+	if err := lc.collectCtrlEnclosure(res.EnclosureList); err != nil {
 		errs = append(errs, err)
 	}
 
-	if err := lc.collectCtrlBattery(ctx, res.CacheVaultInfo); err != nil {
+	if err := lc.collectCtrlBattery(res.CacheVaultInfo); err != nil {
 		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
 }
 
-func (lc *lsiController) parseCtrlCard(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) parseCtrlCard() error {
 
-	data, err := storcliCmd(ctx, "/c"+lc.cid, "show", "all", "J")
+	data, err := storcliRun("/c"+lc.cid, "show", "all", "J")
 	if err != nil {
 		return err
 	}
@@ -172,10 +159,7 @@ func (lc *lsiController) parseCtrlCard(ctx context.Context) error {
 	return nil
 }
 
-func (lc *lsiController) collectCtrlPD(ctx context.Context, pds []*pdList) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) collectCtrlPD(pds []*pdList) error {
 
 	if len(pds) == 0 {
 		return nil
@@ -188,7 +172,7 @@ func (lc *lsiController) collectCtrlPD(ctx context.Context, pds []*pdList) error
 	errs := make([]error, 0, len(pds))
 
 	for _, pd := range pds {
-		if err := lc.parseCtrlPD(ctx, pd); err != nil {
+		if err := lc.parseCtrlPD(pd); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -196,10 +180,7 @@ func (lc *lsiController) collectCtrlPD(ctx context.Context, pds []*pdList) error
 	return errors.Join(errs...)
 }
 
-func (lc *lsiController) parseCtrlPD(ctx context.Context, pd *pdList) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) parseCtrlPD(pd *pdList) error {
 
 	res := &physicalDrive{
 		DeviceId:           strconv.Itoa(pd.DID),
@@ -220,12 +201,12 @@ func (lc *lsiController) parseCtrlPD(ctx context.Context, pd *pdList) error {
 	res.SlotId = sid
 	res.Location = "/c" + lc.cid + "/e" + res.EnclosureId + "/s" + res.SlotId
 
-	data, err := storcliCmd(ctx, res.Location, "show", "all")
+	data, err := storcliRun(res.Location, "show", "all")
 	if err != nil {
 		return err
 	}
 
-	pdFields := []field{
+	pdFields := []collectField{
 		{"Shield Counter", &res.ShieldCounter},
 		{"Media Error Count", &res.MediaErrorCount},
 		{"Other Error Count", &res.OtherErrorCount},
@@ -263,7 +244,12 @@ func (lc *lsiController) parseCtrlPD(ctx context.Context, pd *pdList) error {
 		errs = append(errs, err)
 	}
 
-	if err := res.collectSMARTData(SMARTConfig{Option: "megaraid", DeviceID: res.DeviceId, ControllerID: lc.cid}); err != nil {
+	err = res.getSMARTData(smart.Option{
+		Type:   "megaraid",
+		Did:    res.DeviceId,
+		CtrlID: lc.cid,
+	})
+	if err != nil {
 		errs = append(errs, err)
 	}
 
@@ -287,10 +273,7 @@ func parseDG(dg any) string {
 	}
 }
 
-func (lc *lsiController) collectCtrlLD(ctx context.Context, vds []*vdList) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) collectCtrlLD(vds []*vdList) error {
 
 	if len(vds) == 0 {
 		return nil
@@ -303,7 +286,7 @@ func (lc *lsiController) collectCtrlLD(ctx context.Context, vds []*vdList) error
 	errs := make([]error, 0, len(vds))
 
 	for _, vd := range vds {
-		if err := lc.parseCtrlLD(ctx, vd); err != nil {
+		if err := lc.parseCtrlLD(vd); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -311,10 +294,7 @@ func (lc *lsiController) collectCtrlLD(ctx context.Context, vds []*vdList) error
 	return errors.Join(errs...)
 }
 
-func (lc *lsiController) parseCtrlLD(ctx context.Context, vd *vdList) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) parseCtrlLD(vd *vdList) error {
 
 	ld := &logicalDrive{
 		Type:     vd.Level,
@@ -333,12 +313,12 @@ func (lc *lsiController) parseCtrlLD(ctx context.Context, vd *vdList) error {
 	ld.VD = vid
 	ld.Location = "/c" + lc.cid + "/v" + vid
 
-	data, err := storcliCmd(ctx, ld.Location, "show", "all")
+	data, err := storcliRun(ld.Location, "show", "all")
 	if err != nil {
 		return err
 	}
 
-	fields := []field{
+	fields := []collectField{
 		{"Strip Size", &ld.StripSize},
 		{"Number of Blocks", &ld.NumberOfBlocks},
 		{"Number of Drives Per Span", &ld.NumberOfDrivesPerSpan},
@@ -375,10 +355,7 @@ func (lc *lsiController) parseCtrlLD(ctx context.Context, vd *vdList) error {
 	return scanner.Err()
 }
 
-func (lc *lsiController) collectCtrlEnclosure(ctx context.Context, ens []*enclosureList) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) collectCtrlEnclosure(ens []*enclosureList) error {
 
 	if len(ens) == 0 {
 		return nil
@@ -391,7 +368,7 @@ func (lc *lsiController) collectCtrlEnclosure(ctx context.Context, ens []*enclos
 	errs := make([]error, 0, len(ens))
 
 	for _, en := range ens {
-		if err := lc.parseCtrlEnclosure(ctx, en); err != nil {
+		if err := lc.parseCtrlEnclosure(en); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -399,10 +376,7 @@ func (lc *lsiController) collectCtrlEnclosure(ctx context.Context, ens []*enclos
 	return errors.Join(errs...)
 }
 
-func (lc *lsiController) parseCtrlEnclosure(ctx context.Context, en *enclosureList) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) parseCtrlEnclosure(en *enclosureList) error {
 
 	enl := &enclosure{
 		ID:                 strconv.Itoa(en.EID),
@@ -412,12 +386,12 @@ func (lc *lsiController) parseCtrlEnclosure(ctx context.Context, en *enclosureLi
 		PhysicalDriveCount: strconv.Itoa(en.PD),
 	}
 
-	data, err := storcliCmd(ctx, enl.Location, "show", "all")
+	data, err := storcliRun(enl.Location, "show", "all")
 	if err != nil {
 		return err
 	}
 
-	fields := []field{
+	fields := []collectField{
 		{"Connector Name", &enl.ConnectorName},
 		{"Enclosure Type", &enl.EnclosureType},
 		{"Enclosure Serial Number", &enl.EnclosureSerialNumber},
@@ -449,10 +423,7 @@ func (lc *lsiController) parseCtrlEnclosure(ctx context.Context, en *enclosureLi
 	return scanner.Err()
 }
 
-func (lc *lsiController) collectCtrlBattery(ctx context.Context, bbus []*cacheVaultInfo) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (lc *lsiController) collectCtrlBattery(bbus []*cacheVaultInfo) error {
 
 	if len(bbus) == 0 {
 		return nil

@@ -3,7 +3,6 @@ package raid
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/zx-cc/baize/internal/collector/smart"
 	"github.com/zx-cc/baize/pkg/shell"
 	"github.com/zx-cc/baize/pkg/utils"
 )
@@ -31,29 +31,25 @@ var (
 	hpeEnclosureRegex = regexp.MustCompile(`Internal Drive Cage at Port (\d+I), Box (\d+), ([A-Za-z]+)`)
 )
 
-func collectHPE(ctx context.Context, i int, c *controller) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func collectHPE(i int, c *controller) error {
 	hpeCtr := &hpeController{
 		ctrl: c,
 	}
 
-	if !hpeCtr.isFound(i) {
-		return fmt.Errorf("hpe controller %s not found", c.PCIe.PCIAddr)
+	if !hpeCtr.hasController(i) {
+		return fmt.Errorf("hpe controller %s not found", c.PCIe.Bus)
 	}
 
-	err := hpeCtr.collect(ctx)
+	err := hpeCtr.collect()
 
 	hpeCtr.associate()
 
 	return err
 }
 
-func (h *hpeController) isFound(num int) bool {
+func (h *hpeController) hasController(num int) bool {
 	for i := 0; i < num; i++ {
-		script := fmt.Sprintf("%s ctrl slot=%d show | grep -i %s", hpssacli, i, h.ctrl.PCIe.PCIAddr)
+		script := fmt.Sprintf("%s ctrl slot=%d show | grep -i %s", hpssacli, i, h.ctrl.PCIe.Bus)
 		stdout, err := shell.RunShell(script)
 		if err == nil && len(stdout) > 0 {
 			h.cid = strconv.Itoa(i)
@@ -64,99 +60,82 @@ func (h *hpeController) isFound(num int) bool {
 	return false
 }
 
-func hpssacliCmd(ctx context.Context, args ...string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	return shell.RunWithContext(ctx, hpssacli, args...)
+func hpssacliRun(args ...string) ([]byte, error) {
+	return shell.Run(hpssacli, args...)
 }
 
-func (h *hpeController) collect(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	data, err := hpssacliCmd(ctx, "ctrl", "slot="+h.cid, "show", "config")
+func (h *hpeController) collect() error {
+	data, err := hpssacliRun("ctrl", "slot="+h.cid, "show", "config")
 	if err != nil {
 		return err
 	}
 
 	errs := make([]error, 0, 4)
-	if err := h.parseCtrlCard(ctx); err != nil {
+	if err := h.parseCtrlCard(); err != nil {
 		errs = append(errs, err)
 	}
 
 	pds := hpePDRegex.FindAllSubmatch(data, -1)
-	if err := h.collectCtrlPD(ctx, pds); err != nil {
+	if err := h.collectCtrlPD(pds); err != nil {
 		errs = append(errs, err)
 	}
 
 	lds := hpeLDRegex.FindAllSubmatch(data, -1)
-	if err := h.collectCtrlLD(ctx, lds); err != nil {
+	if err := h.collectCtrlLD(lds); err != nil {
 		errs = append(errs, err)
 	}
 
 	els := hpeEnclosureRegex.FindAllSubmatch(data, -1)
-	if err := h.collectCtrlEnclosure(ctx, els); err != nil {
+	if err := h.collectCtrlEnclosure(els); err != nil {
 		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
 }
 
-func (h *hpeController) parseCtrlCard(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (h *hpeController) parseCtrlCard() error {
 
-	data, err := hpssacliCmd(ctx, "ctrl", "slot="+h.cid, "show")
+	data, err := hpssacliRun("ctrl", "slot="+h.cid, "show")
 	if err != nil {
 		return fmt.Errorf("controller %s: %w", h.cid, err)
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	fieldMap := map[string]*string{
-		"Controller Status": &h.ctrl.ControllerStatus,
-		"Controller Mode":   &h.ctrl.CurrentPersonality,
-		"Firmware Version":  &h.ctrl.Firmware,
-		"Total Cache Size":  &h.ctrl.CacheSize,
-		"Interface":         &h.ctrl.HostInterface,
-		"Serial Number":     &h.ctrl.SerialNumber,
+	cardFields := []collectField{
+		{"Controller Status", &h.ctrl.ControllerStatus},
+		{"Controller Mode", &h.ctrl.CurrentPersonality},
+		{"Firmware Version", &h.ctrl.Firmware},
+		{"Total Cache Size", &h.ctrl.CacheSize},
+		{"Interface", &h.ctrl.HostInterface},
+		{"Serial Number", &h.ctrl.SerialNumber},
 	}
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "Smart ") || strings.HasPrefix(line, "HPE Smart Array") {
-			h.ctrl.ProductName = line
-			continue
+	scanner := utils.NewScanner(bytes.NewReader(data))
+	for {
+		key, value, isEnd := scanner.ParseLine(":")
+		if isEnd {
+			break
 		}
 
-		key, value, found := strings.Cut(line, ":")
-		if !found {
+		if strings.HasPrefix(key, "Smart ") || strings.HasPrefix(key, "HPE Smart Array") {
+			h.ctrl.ProductName = key
 			continue
 		}
-
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
 
 		if key == "Battery/Capacitor Status" {
 			h.ctrl.Battery = append(h.ctrl.Battery, &battery{State: value})
 		}
 
-		if field, ok := fieldMap[key]; ok {
-			*field = value
+		for _, f := range cardFields {
+			if key == f.key {
+				*f.value = value
+			}
 		}
 	}
 
 	return scanner.Err()
 }
 
-func (h *hpeController) collectCtrlPD(ctx context.Context, pds [][][]byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func (h *hpeController) collectCtrlPD(pds [][][]byte) error {
 	if len(pds) == 0 {
 		return nil
 	}
@@ -164,21 +143,17 @@ func (h *hpeController) collectCtrlPD(ctx context.Context, pds [][][]byte) error
 	errs := make([]error, 0, len(pds))
 	h.ctrl.PhysicalDrives = make([]*physicalDrive, 0, len(pds)/2)
 	for _, pd := range pds {
-		if err := h.parseCtrlPD(ctx, pd[1]); err != nil {
+		if err := h.parseCtrlPD(pd[1]); err != nil {
 			errs = append(errs, fmt.Errorf("parse %s pd: %w", string(pd[1]), err))
 			continue
 		}
 	}
 
-	return utils.CombineErrors(errs)
+	return errors.Join(errs...)
 }
 
-func (h *hpeController) parseCtrlPD(ctx context.Context, p []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	data, err := hpssacliCmd(ctx, "ctrl", "slot="+h.cid, "pd", string(p), "show")
+func (h *hpeController) parseCtrlPD(p []byte) error {
+	data, err := hpssacliRun("ctrl", "slot="+h.cid, "pd", string(p), "show")
 	if err != nil {
 		return err
 	}
@@ -213,16 +188,12 @@ func (h *hpeController) parseCtrlPD(ctx context.Context, p []byte) error {
 	}
 
 	var errs []error
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		key, value, found := strings.Cut(line, ":")
-		if !found {
-			continue
+	scanner := utils.NewScanner(bytes.NewReader(data))
+	for {
+		key, value, isEnd := scanner.ParseLine(":")
+		if isEnd {
+			break
 		}
-
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
 
 		if handler, ok := fieldFunc[key]; ok {
 			handler(value)
@@ -250,17 +221,20 @@ func (h *hpeController) hpeSMART(pd *physicalDrive) error {
 
 	if block := utils.GetBlockByWWN(pd.WWN); block != "" {
 		pd.MappingFile = block
-		if err := pd.collectSMARTData(SMARTConfig{Option: "jbod"}); err != nil {
+		if err := pd.getSMARTData(smart.Option{
+			Type: "jbod", Block: block}); err != nil {
 			return err
 		}
 		return nil
 	}
 
-	block := "/dev/" + utils.GetOneBlock()
-
 	if did, err := strconv.Atoi(pd.DeviceId); err == nil {
 		useID := did - int(atomic.LoadUint32(&h.failedPDs))
-		if err := pd.collectSMARTData(SMARTConfig{Option: "cciss", BlockDevice: block, DeviceID: strconv.Itoa(useID)}); err != nil {
+		err := pd.getSMARTData(smart.Option{
+			Type:  "cciss",
+			Block: defaultBlock,
+			Did:   strconv.Itoa(useID)})
+		if err != nil {
 			return err
 		}
 	}
@@ -268,11 +242,7 @@ func (h *hpeController) hpeSMART(pd *physicalDrive) error {
 	return nil
 }
 
-func (h *hpeController) collectCtrlLD(ctx context.Context, lds [][][]byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func (h *hpeController) collectCtrlLD(lds [][][]byte) error {
 	if len(lds) == 0 {
 		return nil
 	}
@@ -281,20 +251,16 @@ func (h *hpeController) collectCtrlLD(ctx context.Context, lds [][][]byte) error
 	h.ctrl.LogicalDrives = make([]*logicalDrive, 0, len(lds)/2)
 
 	for _, ld := range lds {
-		if err := h.parseCtrlLD(ctx, ld[1]); err != nil {
+		if err := h.parseCtrlLD(ld[1]); err != nil {
 			errs = append(errs, fmt.Errorf("parse ld %s: %w", string(ld[1]), err))
 		}
 	}
 
-	return utils.CombineErrors(errs)
+	return errors.Join(errs...)
 }
 
-func (h *hpeController) parseCtrlLD(ctx context.Context, ld []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	data, err := hpssacliCmd(ctx, "ctrl", "slot="+h.cid, "ld", string(ld), "show")
+func (h *hpeController) parseCtrlLD(ld []byte) error {
+	data, err := hpssacliRun("ctrl", "slot="+h.cid, "ld", string(ld), "show")
 	if err != nil {
 		return err
 	}
@@ -314,26 +280,26 @@ func (h *hpeController) parseCtrlLD(ctx context.Context, ld []byte) error {
 	}
 
 	var array string
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "physicaldrive") {
-			parts := strings.Fields(line)
+	scanner := utils.NewScanner(bytes.NewReader(data))
+	for {
+		key, value, isEnd := scanner.ParseLine(":")
+		if isEnd {
+			break
+		}
+
+		if strings.HasPrefix(key, "physicaldrive") {
+			parts := strings.Fields(key)
 			res.pds = append(res.pds, parts[1])
 			continue
 		}
 
-		if strings.HasPrefix(line, "Array") {
-			array = line
+		if strings.HasPrefix(key, "Array") {
+			array = key
 			continue
 		}
 
-		if key, value, found := strings.Cut(line, ":"); found {
-			key = strings.TrimSpace(key)
-			value = strings.TrimSpace(value)
-			if fn, exists := fieldsMap[key]; exists {
-				fn(value)
-			}
+		if fn, exists := fieldsMap[key]; exists {
+			fn(value)
 		}
 	}
 
@@ -351,11 +317,11 @@ func (h *hpeController) parseCtrlLD(ctx context.Context, ld []byte) error {
 
 	h.ctrl.LogicalDrives = append(h.ctrl.LogicalDrives, res)
 
-	return utils.CombineErrors(errs)
+	return errors.Join(errs...)
 }
 
 func parseArrayPD(res *logicalDrive, cid, array string) error {
-	data, err := hpssacliCmd(context.Background(), "ctrl", fmt.Sprintf("slot=%s", cid), array, "pd", "all", "show")
+	data, err := hpssacliRun("ctrl", fmt.Sprintf("slot=%s", cid), array, "pd", "all", "show")
 	if err != nil {
 		return fmt.Errorf("%s : %w", array, err)
 	}
@@ -372,11 +338,7 @@ func parseArrayPD(res *logicalDrive, cid, array string) error {
 	return scanner.Err()
 }
 
-func (h *hpeController) collectCtrlEnclosure(ctx context.Context, els [][][]byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func (h *hpeController) collectCtrlEnclosure(els [][][]byte) error {
 	if len(els) == 0 {
 		return nil
 	}
@@ -384,18 +346,14 @@ func (h *hpeController) collectCtrlEnclosure(ctx context.Context, els [][][]byte
 	errs := make([]error, 0, len(els))
 	for _, el := range els {
 
-		if err := h.parseCtrlEnclosure(ctx, el); err != nil {
+		if err := h.parseCtrlEnclosure(el); err != nil {
 			errs = append(errs, fmt.Errorf("parse enclosure %s: %w", string(el[1]), err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (h *hpeController) parseCtrlEnclosure(ctx context.Context, el [][]byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func (h *hpeController) parseCtrlEnclosure(el [][]byte) error {
 	if len(el) != 4 {
 		return fmt.Errorf("enclosure match error:%v", el[1:])
 	}
@@ -405,34 +363,29 @@ func (h *hpeController) parseCtrlEnclosure(ctx context.Context, el [][]byte) err
 		State:    string(el[3]),
 	}
 
-	data, err := hpssacliCmd(ctx, "ctrl", fmt.Sprintf("slot=%s", h.cid), "enclosure", res.Location, "show")
+	data, err := hpssacliRun("ctrl", fmt.Sprintf("slot=%s", h.cid), "enclosure", res.Location, "show")
 	if err != nil {
 		return fmt.Errorf("enclosure %s: %w", res.Location, err)
 	}
 
-	fieldsMap := map[string]*string{
-		"Drive Bays": &res.PhysicalDriveCount,
-		"Port":       &res.ID,
-		"Box":        &res.Slots,
-		"Location":   &res.EnclosureType,
+	elFields := []collectField{
+		{"Drive Bays", &res.PhysicalDriveCount},
+		{"Port", &res.ID},
+		{"Box", &res.Slots},
+		{"Location", &res.EnclosureType},
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if len(line) == 0 {
-			continue
+	scanner := utils.NewScanner(bytes.NewReader(data))
+	for {
+		key, value, isEnd := scanner.ParseLine(":")
+		if isEnd {
+			break
 		}
 
-		key, value, found := strings.Cut(line, ":")
-		if !found {
-			continue
-		}
-
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if field, exists := fieldsMap[key]; exists {
-			*field = value
+		for _, f := range elFields {
+			if f.key == key {
+				*f.value = value
+			}
 		}
 	}
 

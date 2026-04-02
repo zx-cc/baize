@@ -1,15 +1,13 @@
-// Package raid provides functionality for collecting storage controller and NVMe
-// device information. It supports LSI (Broadcom), HPE, Intel VROC, and Adaptec
-// RAID controllers, as well as direct-attached NVMe drives via PCI enumeration.
 package raid
 
 import (
-	"context"
 	"errors"
-	"fmt"
-	"sync"
+	"path/filepath"
+	"slices"
 
 	"github.com/zx-cc/baize/internal/collector/pci"
+	"github.com/zx-cc/baize/internal/collector/smart"
+	"github.com/zx-cc/baize/pkg/paths"
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
@@ -24,24 +22,18 @@ const (
 	VendorAdaptec vendorID = "9005" // Microchip / Adaptec
 )
 
-// vendorCtrl associates a PCI vendor ID with its vendor-specific collect function.
-type vendorCtrl struct {
+type ctrlHandler struct {
 	id vendorID
-	fn func(context.Context, int, *controller) error
+	fn func(int, *controller) error
 }
 
-// ctrlCollect is the ordered list of supported RAID controller vendors and their
-// respective collection handlers. Each entry is tried when a matching PCI vendor ID
-// is detected.
-var ctrlCollect = []vendorCtrl{
-	{id: VendorLSI, fn: collectLSI},
-	{id: VendorHPE, fn: collectHPE},
-	{id: VendorIntel, fn: collectIntel},
-	{id: VendorAdaptec, fn: collectAdaptec},
+var ctrlHandlers = []ctrlHandler{
+	{VendorLSI, collectLSI},
+	{VendorAdaptec, collectAdaptec},
+	{VendorHPE, collectHPE},
+	{VendorIntel, collectIntel},
 }
 
-// New creates and returns a new Controllers instance with pre-allocated slices
-// for RAID controllers and NVMe devices.
 func New() *Controllers {
 	return &Controllers{
 		Controller: make([]*controller, 0, 2),
@@ -49,150 +41,161 @@ func New() *Controllers {
 	}
 }
 
-// Collect discovers and collects information for all NVMe drives and RAID controllers
-// present on the system. Both collection paths run concurrently; errors are joined.
 func (c *Controllers) Collect() error {
-	errs := make([]error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Collect NVMe drives and RAID controllers concurrently (they are independent).
-	go func() {
-		defer wg.Done()
-		if err := c.collectNVMe(ctx); err != nil {
-			errs[0] = fmt.Errorf("collect NVMe failed: %w", err)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		if err := c.collectController(ctx); err != nil {
-			errs[1] = fmt.Errorf("collect controller failed: %w", err)
-		}
-	}()
-
-	wg.Wait()
-
-	return errors.Join(errs...)
-}
-
-// collectController enumerates RAID controller PCI devices, resolves their vendor,
-// and delegates to the appropriate vendor-specific collection function.
-func (c *Controllers) collectController(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// Discover all serial-attached RAID controller PCI bus addresses.
-	ctrls, err := pci.GetSerialRAIDPCIBus()
+	allPCI, err := pci.Collect()
 	if err != nil {
 		return err
 	}
 
-	ctrlCount := len(ctrls)
-	if ctrlCount == 0 {
-		return nil
+	var (
+		ctrlPCI []*pci.PCI
+		nvmePCI []*pci.PCI
+	)
+	for _, p := range allPCI {
+		if p.ClassID == "01" {
+			switch {
+			case slices.Contains([]string{"04", "07"}, p.SubClassID):
+				ctrlPCI = append(ctrlPCI, p)
+			case p.SubClassID == "08":
+				nvmePCI = append(nvmePCI, p)
+			}
+		}
 	}
 
-	errs := make([]error, 0, ctrlCount)
-	for _, ctrl := range ctrls {
-		// Collect PCI device information (vendor ID, device ID, etc.).
-		p := pci.New(ctrl)
-		if err := p.Collect(); err != nil {
-			errs = append(errs, fmt.Errorf("collect controller %s pci failed: %w", ctrl, err))
-			continue
+	if len(ctrlPCI) == 0 && len(nvmePCI) == 0 {
+		return errors.New("NVMe and controller not found")
+	}
+
+	errs := make([]error, 0, 2)
+
+	if len(nvmePCI) > 0 {
+		if err := c.collectNVMe(nvmePCI); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(ctrlPCI) > 0 {
+		if err := c.collectCtrl(ctrlPCI); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func (c *Controllers) collectCtrl(ctrlPCI []*pci.PCI) error {
+	errs := make([]error, 0, len(ctrlPCI))
+
+	for _, cp := range ctrlPCI {
+		ctrl := &controller{
+			PCIe: cp,
 		}
 
-		ctr := &controller{
-			PCIe: p,
-		}
-
-		// Match vendor ID and invoke the corresponding vendor handler.
-		// Each controller can only match one vendor; break after first match.
-		matched := false
-		for _, h := range ctrlCollect {
-			if h.id == vendorID(ctr.PCIe.VendorID) {
-				if err := h.fn(ctx, ctrlCount, ctr); err != nil {
-					errs = append(errs, fmt.Errorf("handle %s controller failed: %w", ctrl, err))
+		for _, hanler := range ctrlHandlers {
+			if hanler.id == vendorID(cp.VendorID) {
+				if err := hanler.fn(len(ctrlPCI), ctrl); err != nil {
+					errs = append(errs, err)
 				}
-				matched = true
-				break
 			}
 		}
 
-		// Only append controllers that were successfully matched to a vendor handler.
-		if matched {
-			c.Controller = append(c.Controller, ctr)
-		}
-	}
-
-	return utils.CombineErrors(errs)
-}
-
-// collectNVMe enumerates NVMe PCI devices and collects SMART data for each drive.
-// Default media type and form factor are applied before SMART collection.
-func (c *Controllers) collectNVMe(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// Discover all NVMe PCI bus addresses.
-	nvmes, err := pci.GetNVMePCIBus()
-	if err != nil {
-		return err
-	}
-
-	nvmeCount := len(nvmes)
-	if nvmeCount == 0 {
-		return nil
-	}
-
-	errs := make([]error, 0, nvmeCount)
-	for _, n := range nvmes {
-		// Collect PCI device metadata for this NVMe address.
-		p := pci.New(n)
-		if err := p.Collect(); err != nil {
-			errs = append(errs, fmt.Errorf("collect NVMe %s pci failed: %w", n, err))
-			continue
-		}
-
-		// Initialize NVMe with default physical drive attributes.
-		nv := &nvme{
-			PCIe: p,
-			physicalDrive: physicalDrive{
-				RotationRate: "SSD",
-				MediaType:    "NVMe SSD",
-				FormFactor:   "2.5 inch",
-			},
-		}
-
-		// Collect SMART data and namespace information via smartctl.
-		if err := nv.collect(); err != nil {
-			errs = append(errs, fmt.Errorf("collect NVMe %s failed: %w", n, err))
-		}
-
-		c.NVMe = append(c.NVMe, nv)
+		c.Controller = append(c.Controller, ctrl)
 	}
 
 	return errors.Join(errs...)
 }
 
-// Name returns the collector identifier used for module routing.
-func (c *Controllers) Name() string {
-	return "raid"
+func (c *Controllers) collectNVMe(nvmePCI []*pci.PCI) error {
+	errs := make([]error, 0, len(nvmePCI))
+	for _, np := range nvmePCI {
+		n := &nvme{
+			PCIe: np,
+		}
+
+		nvmePath := filepath.Join(paths.SysBusPciDevices, np.Bus, "nvme")
+		names, err := filepath.Glob(filepath.Join(nvmePath, "nvme*"))
+		if err != nil {
+			c.NVMe = append(c.NVMe, n)
+			errs = append(errs, err)
+			continue
+		}
+
+		if len(names) == 1 {
+			n.MappingFile = "/dev/" + filepath.Base(names[0])
+
+			if err := n.getSMARTData(smart.Option{
+				Type:  "nvme",
+				Block: n.MappingFile,
+			}); err != nil {
+				errs = append(errs, err)
+			}
+
+			namespaces, err := filepath.Glob(filepath.Join(nvmePath, filepath.Base(names[0]), "nvme*"))
+			if err != nil {
+				errs = append(errs, err)
+				c.NVMe = append(c.NVMe, n)
+				continue
+			}
+
+			for _, ns := range namespaces {
+				n.Namespaces = append(n.Namespaces, "/dev/"+filepath.Base(ns))
+			}
+		}
+
+		c.NVMe = append(c.NVMe, n)
+	}
+
+	return errors.Join(errs...)
 }
 
-// // JSON serializes the Controllers struct to JSON and writes it to stdout.
-// func (c *Controllers) JSON() error {
-// 	return utils.JSONPrintln(c)
-// }
+type pdSMART struct {
+	smartField string
+	pdField    *string
+}
 
-// // DetailPrintln prints full RAID controller and drive details to stdout.
-// func (c *Controllers) DetailPrintln() {
-// 	utils.PrinterInstance.Print(c, "RAID INFO")
-// }
+func (pd *physicalDrive) getSMARTData(so smart.Option) error {
+	s, err := smart.GetSmartctlData(so)
+	if err != nil {
+		return err
+	}
 
-// // BriefPrintln prints a brief RAID and NVMe summary to stdout.
-// func (c *Controllers) BriefPrintln() {
-// 	utils.PrinterInstance.Print(c, "RAID INFO")
-// }
+	fields := []pdSMART{
+		{s.Capacity, &pd.Capacity},
+		{s.Firmware, &pd.FirmwareVersion},
+		{s.FormFactor, &pd.FormFactor},
+		{s.MediaType, &pd.MediaType},
+		{s.ModelName, &pd.ModelName},
+		{s.PN, &pd.PN},
+		{s.PowerOn, &pd.PowerOnTime},
+		{s.Protocol, &pd.ProtocolType},
+		{s.ProtocolVer, &pd.ProtocolVersion},
+		{s.ReadCache, &pd.ReadCache},
+		{s.Rotation, &pd.RotationRate},
+		{s.SN, &pd.SN},
+		{s.Temperature, &pd.Temperature},
+		{s.Vendor, &pd.Vendor},
+		{s.WriteCache, &pd.WriteCache},
+	}
+
+	for _, f := range fields {
+		if *f.pdField == "" && f.smartField != "" {
+			*f.pdField = f.smartField
+		}
+	}
+
+	pd.SMARTStatus = s.SMARTStatus
+	pd.SMARTAttributes = s.SMARTAttrs
+
+	return nil
+}
+
+var defaultBlock = "/dev/sda"
+
+func getDefaultBlock() {
+	blocks := utils.GetBlockFromSysfs()
+	if len(blocks) == 0 {
+		return
+	}
+
+	defaultBlock = "/dev/" + blocks[0]
+}

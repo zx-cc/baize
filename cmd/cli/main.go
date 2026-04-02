@@ -1,42 +1,70 @@
 package main
 
 import (
-	"encoding/json"
+	"flag"
+	"fmt"
+	"log/slog"
+	"time"
 
-	"github.com/zx-cc/baize/internal/collector/smart"
+	"github.com/zx-cc/baize/pkg/manager"
+	"github.com/zx-cc/baize/pkg/utils"
 )
 
-type collector interface {
-	Collect() error
+// cliCfg holds parsed command-line configuration options.
+type cliCfg struct {
+	module string // target module name, e.g., "cpu", "memory", "all"
+	json   bool   // when true, output results as JSON
+	detail bool   // when true, print detailed view instead of brief summary
+}
+
+// newCliCfg registers CLI flags and parses them, returning a populated cliCfg.
+func newCliCfg() *cliCfg {
+	res := &cliCfg{}
+	flag.StringVar(&res.module, "m", "all", "module name")
+	flag.BoolVar(&res.json, "j", false, "output json")
+	flag.BoolVar(&res.detail, "d", false, "output detail")
+
+	flag.Parse()
+
+	return res
+}
+
+// printBanner prints the application header when in terminal (non-JSON) mode.
+func printBanner() {
+	fmt.Printf("\n%s╔══════════════════════════════════════════════════╗%s\n", utils.ColorCyan, utils.ColorReset)
+	fmt.Printf("%s║%s  %s白泽 (Baize) — Hardware Information Collector%s    %s║%s\n",
+		utils.ColorCyan, utils.ColorReset, utils.ColorBold, utils.ColorReset, utils.ColorCyan, utils.ColorReset)
+	fmt.Printf("%s╚══════════════════════════════════════════════════╝%s\n", utils.ColorCyan, utils.ColorReset)
 }
 
 func main() {
-	m, err := smart.GetSmartctlData(smart.Option{
-		Type:   "megaraid",
-		CtrlID: "0",
-		Did:    "2",
-	})
+	cfg := newCliCfg()
 
-	if err != nil {
-		panic(err)
-	}
-	res, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		panic(err)
+	// Build the collector manager with the parsed CLI settings.
+	m := manager.Manager{
+		Module: cfg.module,
+		Detail: cfg.detail,
+		Json:   cfg.json,
+		Log:    slog.Default(),
 	}
 
-	println(string(res))
-}
-
-func print(n collector) {
-	if err := n.Collect(); err != nil {
-		panic(err)
+	// Print banner for terminal modes only.
+	if !cfg.json {
+		printBanner()
 	}
 
-	res, err := json.MarshalIndent(n, "", "  ")
-	if err != nil {
-		panic(err)
+	start := time.Now()
+
+	if err := manager.NewManager(&m); err != nil {
+		if !cfg.json {
+			fmt.Printf("\n%s⚠ collection warning: %v%s\n", utils.ColorYellow, err, utils.ColorReset)
+		}
 	}
 
-	println(string(res))
+	// Print elapsed time for terminal modes.
+	if !cfg.json {
+		elapsed := time.Since(start)
+		fmt.Printf("\n%s── Collection completed in %.2fs ──%s\n\n",
+			utils.ColorDim, elapsed.Seconds(), utils.ColorReset)
+	}
 }
