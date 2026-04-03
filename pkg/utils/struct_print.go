@@ -4,249 +4,475 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 )
 
-// ANSI color codes for terminal output.
+// ANSI 颜色码
 const (
-	ColorReset  = "\033[0m"
-	ColorRed    = "\033[31m"
-	ColorGreen  = "\033[32m"
-	ColorYellow = "\033[33m"
-	ColorCyan   = "\033[36m"
-	ColorBold   = "\033[1m"
-	ColorDim    = "\033[2m"
+	Reset      = "\033[0m"
+	Red        = "\033[31m"
+	Green      = "\033[32m"
+	Yellow     = "\033[33m"
+	Blue       = "\033[34m"
+	Magenta    = "\033[35m"
+	Cyan       = "\033[36m"
+	White      = "\033[37m"
+	BoldRed    = "\033[1;31m"
+	BoldGreen  = "\033[1;32m"
+	BoldYellow = "\033[1;33m"
+	BoldBlue   = "\033[1;34m"
+	BoldCyan   = "\033[1;36m"
+	BoldWhite  = "\033[1;37m"
+	Bold       = "\033[1m"
+	Dim        = "\033[2m"
 )
 
-// StructPrinter renders struct data to the terminal in a human-readable
-// key-value format, driven by struct field tags.
-type StructPrinter struct {
-	indent     int
+// Printer console 输出器
+type Printer struct {
+	mode       string
+	lineWidth  int
 	labelWidth int
 }
 
-// SP is the global StructPrinter instance used by all modules.
-var SP = NewStructPrinter()
-
-// NewStructPrinter creates a StructPrinter with default formatting parameters.
-func NewStructPrinter() *StructPrinter {
-	return &StructPrinter{
-		indent:     4,
-		labelWidth: 28,
+// NewPrinter 创建输出器
+func NewPrinter() *Printer {
+	return &Printer{
+		mode:       "brief",
+		lineWidth:  50,
+		labelWidth: 24,
 	}
 }
 
-// formatValue applies optional color rules to the display value.
-func (sp *StructPrinter) formatValue(colorRule string, value interface{}) string {
-	strValue := fmt.Sprintf("%v", value)
-	if colorRule == "" {
-		return strValue
-	}
+var PrinterInstance = NewPrinter()
 
-	color := sp.getColor(colorRule, strValue)
-	if color == "" {
-		return strValue
-	}
-
-	return fmt.Sprintf("%s%s%s", color, strValue, ColorReset)
+// SetLineWidth 设置分隔线宽度
+func (p *Printer) SetLineWidth(w int) *Printer {
+	p.lineWidth = w
+	return p
 }
 
-// getColor returns the ANSI color code for a given rule and value.
-func (sp *StructPrinter) getColor(colorRule, value string) string {
-	switch colorRule {
-	case "trueGreen":
-		if value == "true" {
-			return ColorGreen
+// SetLabelWidth 设置标签对齐宽度
+func (p *Printer) SetLabelWidth(w int) *Printer {
+	p.labelWidth = w
+	return p
+}
+
+// Print 输出 struct 到 console
+func (p *Printer) Print(v interface{}, title string, outputT string) {
+	if outputT != "" {
+		p.mode = outputT
+	}
+
+	p.printSection(v, title, 0)
+}
+
+// printSection 输出一个 section（带标题）
+func (p *Printer) printSection(v any, title string, depth int) {
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			return
 		}
-		return ColorRed
-	case "DefaultGreen", "defaultGreen":
-		if value != "" {
-			return ColorGreen
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct {
+		return
+	}
+
+	// 收集需要输出的字段
+	lines := p.collectFields(val, depth+1)
+	if len(lines) == 0 {
+		return
+	}
+
+	// 打印标题
+	p.printTitle(title, depth)
+
+	// 打印字段
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	fmt.Println()
+}
+
+// printTitle 打印标题栏
+func (p *Printer) printTitle(title string, depth int) {
+	indent := strings.Repeat("    ", depth)
+	//sep := indent + strings.Repeat("─", p.lineWidth)
+	//fmt.Println(sep)
+	fmt.Printf("%s%s[%s]%s\n", indent, BoldCyan, strings.ToUpper(title), Reset)
+	//fmt.Println(sep)
+	fmt.Println()
+}
+
+// collectFields 递归收集 struct 中需要输出的字段行
+func (p *Printer) collectFields(val reflect.Value, indentLevel int) []string {
+	var lines []string
+	typ := val.Type()
+
+	for i := 0; i < val.NumField(); i++ {
+		field := typ.Field(i)
+		fieldVal := val.Field(i)
+
+		// 跳过未导出字段
+		if !field.IsExported() {
+			continue
 		}
-	case "powerGreen":
-		if value == "Performance" {
-			return ColorGreen
+		name := field.Tag.Get("name")
+		output := field.Tag.Get("output")
+		colorTag := field.Tag.Get("color")
+
+		// 处理嵌套 struct（匿名嵌入）
+		if field.Anonymous {
+			embedded := fieldVal
+			if embedded.Kind() == reflect.Ptr {
+				if embedded.IsNil() {
+					continue
+				}
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				if name == "" {
+					name = field.Name
+				}
+				subLines := p.collectFields(embedded, indentLevel+1)
+				if len(subLines) > 0 {
+					// 嵌入的 struct 作为子 section
+					sectionLines := p.formatSubSection(name, subLines, indentLevel)
+					lines = append(lines, sectionLines...)
+				}
+				continue
+			}
 		}
-		return ColorYellow
-	case "Diagnose":
-		switch {
-		case value == "Healthy" || value == "OK":
-			return ColorGreen
-		case value == "Unhealthy" || value == "WARNING" || strings.HasPrefix(value, "Unhealthy"):
-			return ColorRed
-		default:
-			return ColorYellow
+
+		// 处理 struct 类型字段（非匿名）
+		actualVal := fieldVal
+		actualKind := actualVal.Kind()
+		if actualKind == reflect.Ptr {
+			if actualVal.IsNil() {
+				continue
+			}
+			actualVal = actualVal.Elem()
+			actualKind = actualVal.Kind()
+		}
+
+		// 处理 slice 字段
+		if actualKind == reflect.Slice {
+			// if name == "" {
+			// 	continue
+			// }
+			sliceLines := p.collectSliceFields(actualVal, name, output, indentLevel)
+			lines = append(lines, sliceLines...)
+			continue
+		}
+
+		// 处理嵌套 struct 字段（非匿名）
+		if actualKind == reflect.Struct {
+			if name == "" {
+				name = field.Name
+			}
+			subLines := p.collectFields(actualVal, indentLevel+1)
+			if len(subLines) > 0 {
+				sectionLines := p.formatSubSection(name, subLines, indentLevel)
+				lines = append(lines, sectionLines...)
+			}
+			continue
+		}
+
+		// 普通字段：检查是否需要输出
+		if !p.shouldOutput(output) {
+			continue
+		}
+
+		if name == "" {
+			continue
+		}
+
+		// 获取字符串值
+		strVal := fmt.Sprintf("%v", actualVal.Interface())
+		if strVal == "" {
+			continue
+		}
+
+		// 格式化输出行
+		line := p.formatLine(name, strVal, colorTag, indentLevel)
+		lines = append(lines, line)
+	}
+
+	return lines
+}
+
+// collectSliceFields 收集 slice 类型字段
+func (p *Printer) collectSliceFields(sliceVal reflect.Value, name, output string, indentLevel int) []string {
+	var lines []string
+
+	if !p.shouldOutput(output) {
+		return lines
+	}
+
+	if sliceVal.Len() == 0 {
+		return lines
+	}
+
+	// 检查 slice 元素类型
+	elemType := sliceVal.Type().Elem()
+	if elemType.Kind() == reflect.Ptr {
+		elemType = elemType.Elem()
+	}
+
+	if elemType.Kind() == reflect.Struct {
+		// slice of struct: 每个元素作为子块输出
+		for j := 0; j < sliceVal.Len(); j++ {
+			elem := sliceVal.Index(j)
+			if elem.Kind() == reflect.Ptr {
+				if elem.IsNil() {
+					continue
+				}
+				elem = elem.Elem()
+			}
+			subName := fmt.Sprintf("%s #%d", name, j+1)
+
+			// 尝试从 struct 中找到一个合适的标识名
+			identifier := p.findIdentifier(elem)
+			if identifier != "" {
+				subName = fmt.Sprintf("%s [%s]", name, identifier)
+			}
+
+			subLines := p.collectFields(elem, indentLevel+2)
+			if len(subLines) > 0 {
+				sectionLines := p.formatSubSection(subName, subLines, indentLevel+1)
+				lines = append(lines, sectionLines...)
+			}
+		}
+	}
+
+	return lines
+}
+
+// findIdentifier 尝试从 struct 中找到标识字段（如 Name, Model, Device 等）
+func (p *Printer) findIdentifier(val reflect.Value) string {
+	typ := val.Type()
+	identifierFields := []string{"Name", "Model", "Device", "Locator", "DeviceLocator"}
+	for _, idField := range identifierFields {
+		for i := 0; i < typ.NumField(); i++ {
+			if typ.Field(i).Name == idField {
+				fv := val.Field(i)
+				if fv.Kind() == reflect.String && fv.String() != "" {
+					return fv.String()
+				}
+			}
 		}
 	}
 	return ""
 }
 
-// printField prints a single labeled value line with proper indentation and alignment.
-func (sp *StructPrinter) printField(indent int, label string, value any, colorRule string) {
-	indentStr := strings.Repeat(" ", indent*sp.indent)
-	formattedValue := sp.formatValue(colorRule, value)
-	fmt.Printf("%s%-*s: %v\n", indentStr, sp.labelWidth-indent*sp.indent, label, formattedValue)
-}
-
-// printHeader prints a module section header with visual separators.
-func (sp *StructPrinter) printHeader(indent int, label string) {
-	indentStr := strings.Repeat(" ", indent*sp.indent)
-	line := strings.Repeat("─", 50)
-	fmt.Printf("\n%s%s%s%s\n", indentStr, ColorCyan, line, ColorReset)
-	fmt.Printf("%s%s[%s]%s\n", indentStr, ColorBold, label, ColorReset)
-	fmt.Printf("%s%s%s%s\n", indentStr, ColorCyan, line, ColorReset)
-}
-
-// printStructHeader prints a sub-section header for slice elements (e.g., each DIMM, each NIC).
-func (sp *StructPrinter) printStructHeader(indent int, label string, value string) {
-	indentStr := strings.Repeat(" ", indent*sp.indent)
-	fmt.Printf("\n%s%s%-*s%s: %s\n", indentStr, ColorBold, sp.labelWidth-indent*sp.indent, label, ColorReset, value)
-}
-
-// Print is the main entry point for rendering a struct to the terminal.
-func (sp *StructPrinter) Print(v any, outputType string) {
-	sp.printValue(reflect.ValueOf(v), outputType, 0, true)
-}
-
-// printValue recursively traverses struct fields and prints them according
-// to their output/name/color tags.
-func (sp *StructPrinter) printValue(v reflect.Value, outputType string, indent int, isRoot bool) {
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return
-		}
-		v = v.Elem()
+// shouldOutput 根据 output tag 和当前模式判断是否输出
+func (p *Printer) shouldOutput(output string) bool {
+	switch output {
+	case "":
+		return false
+	case "both":
+		return true
 	}
 
-	if v.Kind() != reflect.Struct {
+	return output == p.mode
+}
+
+// formatLine 格式化一行输出
+func (p *Printer) formatLine(name, value, colorTag string, indentLevel int) string {
+	indent := strings.Repeat("    ", indentLevel)
+	// 右侧补空格对齐
+	padding := p.labelWidth - utf8.RuneCountInString(name)
+	if padding < 1 {
+		padding = 1
+	}
+	label := name + strings.Repeat(" ", padding)
+
+	colorCode := p.resolveColor(colorTag, value)
+	resetCode := ""
+	if colorCode != "" {
+		resetCode = Reset
+	}
+
+	return fmt.Sprintf("%s%s: %s%s%s", indent, label, colorCode, value, resetCode)
+}
+
+// formatSubSection 格式化子 section
+func (p *Printer) formatSubSection(name string, subLines []string, indentLevel int) []string {
+	var lines []string
+	indent := strings.Repeat("    ", indentLevel)
+
+	// 子标题
+	lines = append(lines, fmt.Sprintf("%s%s%s:%s", indent, BoldWhite, name, Reset))
+	lines = append(lines, subLines...)
+	lines = append(lines, "") // 空行分隔
+	return lines
+}
+
+// resolveColor 根据 color tag 解析颜色
+func (p *Printer) resolveColor(colorTag, value string) string {
+	if colorTag == "" {
+		return ""
+	}
+
+	switch colorTag {
+	case "defaultGreen":
+		return Green
+	case "defaultRed":
+		return Red
+	case "defaultYellow":
+		return Yellow
+	case "defaultBlue":
+		return Blue
+	case "defaultCyan":
+		return Cyan
+	case "Diagnose":
+		return p.diagnoseColor(value)
+	case "red":
+		return Red
+	case "green":
+		return Green
+	case "yellow":
+		return Yellow
+	case "blue":
+		return Blue
+	case "cyan":
+		return Cyan
+	case "magenta":
+		return Magenta
+	case "boldRed":
+		return BoldRed
+	case "boldGreen":
+		return BoldGreen
+	case "boldYellow":
+		return BoldYellow
+	case "boldBlue":
+		return BoldBlue
+	case "boldCyan":
+		return BoldCyan
+	default:
+		return ""
+	}
+}
+
+// diagnoseColor 根据诊断值返回颜色
+func (p *Printer) diagnoseColor(value string) string {
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "healthy"),
+		strings.Contains(lower, "normal"),
+		strings.Contains(lower, "ok"),
+		strings.Contains(lower, "pass"),
+		strings.Contains(lower, "good"):
+		return Green
+	case strings.Contains(lower, "warning"),
+		strings.Contains(lower, "warn"),
+		strings.Contains(lower, "degrad"):
+		return Yellow
+	case strings.Contains(lower, "critical"),
+		strings.Contains(lower, "error"),
+		strings.Contains(lower, "fail"),
+		strings.Contains(lower, "abnormal"),
+		strings.Contains(lower, "bad"):
+		return BoldRed
+	default:
+		return Yellow
+	}
+}
+
+// PrintAll 输出顶层 struct，自动展开嵌套 struct 字段为独立 section
+func (p *Printer) PrintAll(v interface{}) {
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			return
+		}
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct {
 		return
 	}
 
-	t := v.Type()
+	typ := val.Type()
+	for i := 0; i < val.NumField(); i++ {
+		field := typ.Field(i)
+		fieldVal := val.Field(i)
 
-	if isRoot {
-		if nameTag := t.Field(0).Tag.Get("name"); t.NumField() > 0 {
-			if t.Field(0).Type.Kind() == reflect.Slice {
-				sp.printHeader(indent, nameTag)
-			}
-		}
-	}
-
-	for i := 0; i < v.NumField(); i++ {
-		field := t.Field(i)
-		value := v.Field(i)
-
-		name, colorRule, ok := parseFieldTag(field, outputType)
-		if !ok {
+		if !field.IsExported() {
 			continue
 		}
 
-		switch value.Kind() {
-		case reflect.Slice, reflect.Array:
-			for j := 0; j < value.Len(); j++ {
-				elem := value.Index(j)
-				if elem.Kind() == reflect.Ptr {
-					if elem.IsNil() {
-						continue
-					}
-					elem = elem.Elem()
-				}
-				if elem.Kind() == reflect.Struct {
-					elemType := elem.Type()
-					if elemType.NumField() > 0 {
-						elemName := elemType.Field(0).Tag.Get("name")
-						if elemName == "" {
-							continue
-						}
-						sp.printStructHeader(indent+1, elemName, fmt.Sprintf("%v", elem.Field(0).Interface()))
-					}
-					sp.printRemainingFields(elem, outputType, indent+2)
-				}
+		name := field.Tag.Get("name")
+		if name == "" {
+			name = field.Name
+		}
 
-				if elem.Kind() == reflect.String {
-					sp.printField(indent+2, name, elem.Interface(), colorRule)
-				}
-			}
-		case reflect.Struct:
-			sp.printValue(value, outputType, indent+1, false)
-		default:
-			if IsEmpty(value) {
+		actual := fieldVal
+		if actual.Kind() == reflect.Ptr {
+			if actual.IsNil() {
 				continue
 			}
-			sp.printField(indent, name, value.Interface(), colorRule)
+			actual = actual.Elem()
+		}
+
+		switch actual.Kind() {
+		case reflect.Struct:
+			p.printSection(actual.Interface(), name+" Info", 0)
+		case reflect.Slice:
+			if actual.Len() > 0 {
+				p.printSliceSection(actual, name, 0)
+			}
+		default:
+			// 普通字段直接输出
+			output := field.Tag.Get("output")
+			colorTag := field.Tag.Get("color")
+			if p.shouldOutput(output) && name != "" {
+				strVal := fmt.Sprintf("%v", actual.Interface())
+				if strVal != "" {
+					fmt.Println(p.formatLine(name, strVal, colorTag, 1))
+				}
+			}
 		}
 	}
 }
 
-// printRemainingFields prints all fields of a struct except the first one
-// (which is typically used as the header/identifier).
-func (sp *StructPrinter) printRemainingFields(v reflect.Value, outputType string, indent int) {
-	t := v.Type()
-	for i := 1; i < v.NumField(); i++ {
-		field := t.Field(i)
-		value := v.Field(i)
+// printSliceSection 输出 slice 类型的 section
+func (p *Printer) printSliceSection(sliceVal reflect.Value, title string, depth int) {
+	if sliceVal.Len() == 0 {
+		return
+	}
 
-		name, colorRule, ok := parseFieldTag(field, outputType)
-		if !ok {
-			continue
-		}
+	indent := strings.Repeat("    ", depth)
+	sep := indent + strings.Repeat("─", p.lineWidth)
+	fmt.Println(sep)
+	fmt.Printf("%s%s[%s]%s\n", indent, BoldCyan, strings.ToUpper(title), Reset)
+	fmt.Println(sep)
+	fmt.Println()
 
-		switch value.Kind() {
-		case reflect.Slice, reflect.Array:
-			for j := 0; j < value.Len(); j++ {
-				elem := value.Index(j)
-				if elem.Kind() == reflect.Ptr {
-					if elem.IsNil() {
-						continue
-					}
-					elem = elem.Elem()
-				}
-				if elem.Kind() == reflect.Struct {
-					elemType := elem.Type()
-					if elemType.NumField() > 0 {
-						elemName := elemType.Field(0).Tag.Get("name")
-						if elemName == "" {
-							continue
-						}
-						sp.printStructHeader(indent, elemName, fmt.Sprintf("%v", elem.Field(0).Interface()))
-					}
-					sp.printRemainingFields(elem, outputType, indent+1)
-				}
-			}
-		case reflect.Struct:
-			sp.printRemainingFields(value, outputType, indent+1)
-		case reflect.Ptr:
-			if !value.IsNil() {
-				sp.printRemainingFields(value.Elem(), outputType, indent+1)
-			}
-		default:
-			if IsEmpty(value) {
+	for i := 0; i < sliceVal.Len(); i++ {
+		elem := sliceVal.Index(i)
+		if elem.Kind() == reflect.Ptr {
+			if elem.IsNil() {
 				continue
 			}
-			sp.printField(indent, name, value.Interface(), colorRule)
+			elem = elem.Elem()
+		}
+		if elem.Kind() == reflect.Struct {
+			identifier := p.findIdentifier(elem)
+			subName := fmt.Sprintf("%s #%d", title, i+1)
+			if identifier != "" {
+				subName = fmt.Sprintf("%s [%s]", title, identifier)
+			}
+
+			subLines := p.collectFields(elem, depth+2)
+			if len(subLines) > 0 {
+				innerIndent := strings.Repeat("    ", depth+1)
+				fmt.Printf("%s%s%s:%s\n", innerIndent, BoldWhite, subName, Reset)
+				for _, line := range subLines {
+					fmt.Println(line)
+				}
+				fmt.Println()
+			}
 		}
 	}
-}
-
-// parseFieldTag extracts display metadata from struct field tags.
-// Returns the display name, color rule, and whether the field should be shown
-// for the given outputType ("brief" or "detail").
-func parseFieldTag(field reflect.StructField, outputType string) (string, string, bool) {
-	name := field.Tag.Get("name")
-	color := field.Tag.Get("color")
-	output := field.Tag.Get("output")
-	var ot string
-	switch output {
-	case "both":
-		ot = outputType
-	case "brief":
-		ot = "brief"
-	case "detail":
-		ot = "detail"
-	}
-
-	if ot != outputType || name == "" {
-		return "", "", false
-	}
-
-	return name, color, true
 }

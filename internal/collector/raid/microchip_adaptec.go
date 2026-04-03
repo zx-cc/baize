@@ -1,3 +1,16 @@
+// Package raid — microchip_adaptec.go collects storage controller and drive
+// data from Microchip/Adaptec RAID controllers using the arcconf utility.
+//
+// Note: On HP platforms (detected via `dmidecode -s system-manufacturer`),
+// this file delegates to the HPE collector rather than using arcconf.
+//
+// Discovery flow:
+//  1. collectAdaptec checks the system manufacturer; HP systems delegate to
+//     collectHPE.
+//  2. hasController reads the controller serial number from sysfs and matches
+//     it against arcconf GETCONFIG output to determine the controller ID (cid).
+//  3. collect calls parseCtrlCard, collectCtrlPD, and collectCtrlLD.
+//  4. associate links physical drives to logical drives by serial number.
 package raid
 
 import (
@@ -16,20 +29,28 @@ import (
 )
 
 const (
+	// snFile is the relative sysfs path (under the PCI device root) that
+	// contains the controller serial number used for controller matching.
 	snFile  = "/host0/scsi_host/host0/serial_number"
 	arcconf = "/usr/local/hwtool/tool/arcconf"
 )
 
+// adaptecController is an internal working struct for Adaptec RAID collection.
 type adaptecController struct {
 	ctrl *controller
-	cid  string
+	cid  string // arcconf controller number string, e.g. "1"
 }
 
+// collectField is a generic key→value pointer pair used to dispatch parsed
+// text output lines to their destination struct fields.
 type collectField struct {
 	key   string
 	value *string
 }
 
+// collectAdaptec is the vendor entry point called by the RAID dispatcher.
+// It first checks the system manufacturer via dmidecode; on HP hardware it
+// delegates to collectHPE.  Otherwise it runs the Adaptec-specific flow.
 func collectAdaptec(i int, c *controller) error {
 	ctrl := &adaptecController{
 		ctrl: c,
@@ -51,6 +72,8 @@ func collectAdaptec(i int, c *controller) error {
 	return ctrl.collect()
 }
 
+// hasController reads the controller serial number from sysfs and searches
+// arcconf slots 0..i for a matching entry.  Sets ac.cid on success.
 func (ac *adaptecController) hasController(i int) bool {
 	sn, err := os.ReadFile(filepath.Join(paths.SysBusPciDevices, ac.ctrl.PCIe.Bus, snFile))
 	if err != nil {
@@ -71,6 +94,7 @@ func (ac *adaptecController) hasController(i int) bool {
 	return false
 }
 
+// arcconfRun runs `arcconf GETCONFIG <args...>` and returns the output.
 func arcconfRun(args ...string) ([]byte, error) {
 	output, err := shell.Run(arcconf+" GETCONFIG", args...)
 	if err != nil {
@@ -80,6 +104,7 @@ func arcconfRun(args ...string) ([]byte, error) {
 	return output, nil
 }
 
+// collect runs the three main sub-collectors and the association step.
 func (ac *adaptecController) collect() error {
 
 	errs := make([]error, 0, 3)
@@ -101,6 +126,8 @@ func (ac *adaptecController) collect() error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlCard fetches the adapter-level config and populates the controller
+// struct with status, mode, firmware, cache size, and RAID counts.
 func (ac *adaptecController) parseCtrlCard() error {
 	data, err := arcconfRun(ac.cid, "AD")
 	if err != nil {
@@ -145,6 +172,8 @@ func (ac *adaptecController) parseCtrlCard() error {
 	return scanner.Err()
 }
 
+// collectCtrlPD fetches the physical device config and dispatches each hard
+// drive block to parseCtrlPD.
 func (ac *adaptecController) collectCtrlPD() error {
 	data, err := arcconfRun(ac.cid, "PD")
 	if err != nil {
@@ -165,6 +194,8 @@ func (ac *adaptecController) collectCtrlPD() error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlPD parses a single PD block from arcconf GETCONFIG PD output,
+// populates a physicalDrive struct, and collects SMART data via aacraid.
 func (ac *adaptecController) parseCtrlPD(data []byte) error {
 	pd := &physicalDrive{}
 	pdFields := []collectField{
@@ -228,6 +259,8 @@ func (ac *adaptecController) parseCtrlPD(data []byte) error {
 	return errors.Join(errs...)
 }
 
+// collectCtrlLD fetches the logical device config and dispatches each LD block
+// to parseCtrlLD.
 func (ac *adaptecController) collectCtrlLD() error {
 	data, err := arcconfRun(ac.cid, "LD")
 	if err != nil {
@@ -249,6 +282,8 @@ func (ac *adaptecController) collectCtrlLD() error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlLD parses a single LD block from arcconf GETCONFIG LD output and
+// populates a logicalDrive struct.
 func (ac *adaptecController) parseCtrlLD(data []byte) error {
 	ld := &logicalDrive{}
 	ldFields := []collectField{
@@ -292,6 +327,8 @@ func (ac *adaptecController) parseCtrlLD(data []byte) error {
 	return scanner.Err()
 }
 
+// associate links physical drives to their parent logical drives by matching
+// the physical drive serial number against the LD segment list.
 func (ac *adaptecController) associate() {
 	for _, ld := range ac.ctrl.LogicalDrives {
 		for _, disk := range ld.pds {

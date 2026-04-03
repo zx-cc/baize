@@ -1,3 +1,9 @@
+// Package cpu — thread.go enumerates logical CPU threads from sysfs and
+// populates per-thread topology IDs and real-time frequency readings.
+//
+// Frequency collection uses turbostat for x86 architectures (provides TSC
+// base frequency, busy frequency, and package-level power/temperature) and
+// falls back to cpufreq/scaling_cur_freq for ARM/AArch64.
 package cpu
 
 import (
@@ -11,6 +17,9 @@ import (
 	"github.com/zx-cc/baize/pkg/shell"
 )
 
+// collectThreads enumerates all logical CPU directories under
+// /sys/devices/system/cpu/cpuN, populates per-thread topology IDs, and then
+// dispatches to the appropriate frequency collection strategy.
 func (c *CPU) collectThreads() error {
 	cpuDirs, err := filepath.Glob(filepath.Join(paths.SysDevicesSystemCPU, "cpu[0-9]*"))
 	if err != nil {
@@ -38,6 +47,8 @@ func (c *CPU) collectThreads() error {
 	return nil
 }
 
+// collectID reads the physical package, core, and die topology IDs for the
+// thread from the given sysfs topology directory.
 func (t *Thread) collectID(path string) {
 	ids := []struct {
 		file string
@@ -58,6 +69,14 @@ func (t *Thread) collectID(path string) {
 	}
 }
 
+// collectFreqFromTurbostat runs `turbostat -q sleep 1` to capture a one-second
+// interval snapshot of per-thread busy frequencies, then populates:
+//   - c.BaseFreq  — TSC (rated) frequency
+//   - c.MinFreq   — minimum observed busy frequency
+//   - c.MaxFreq   — maximum observed busy frequency
+//   - c.Temp      — package-level temperature (CoreTmp column)
+//   - c.Watt      — package-level power draw (PkgWatt column)
+//   - thread.Freq — per-thread current frequency
 func (c *CPU) collectFreqFromTurbostat() {
 	data, err := shell.Run("turbostat", "-q", "sleep", "1")
 	if err != nil {
@@ -159,6 +178,9 @@ func (c *CPU) collectFreqFromTurbostat() {
 	}
 }
 
+// collectFreqFromScalling reads the current scaling frequency for each CPU
+// thread from /sys/devices/system/cpu/cpuN/cpufreq/scaling_cur_freq.
+// This is the preferred method for AArch64 / ARM platforms that lack turbostat.
 func (c *CPU) collectFreqFromScalling() {
 	cpuDirs, err := filepath.Glob(filepath.Join(paths.SysDevicesSystemCPU, "cpu[0-9]+"))
 	if err != nil {
@@ -201,6 +223,7 @@ func getIntValue(key string, header []string, headerIndex map[string]int) int {
 	return -1
 }
 
+// formatMHz formats an integer MHz value as a human-readable string.
 func formatMHz(mhz int) string {
 	return strconv.Itoa(mhz) + " MHz"
 }

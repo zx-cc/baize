@@ -1,3 +1,5 @@
+// Package network — net.go collects per-interface sysfs attributes, ethtool
+// settings, and IPv4 address information for every logical network interface.
 package network
 
 import (
@@ -14,6 +16,10 @@ import (
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
+// collectNetInf builds a NetInterface descriptor for the named interface by
+// reading sysfs attributes (address, mtu, duplex, speed, operstate), running
+// ethtool for driver/firmware version and link settings, and collecting IPv4
+// addresses for active non-slave interfaces.
 func collectNetInf(name string) (*NetInterface, error) {
 	res := &NetInterface{
 		DeviceName: name,
@@ -57,6 +63,8 @@ func collectNetInf(name string) (*NetInterface, error) {
 	return res, errors.Join(errs...)
 }
 
+// collectEthtoolSetting runs `ethtool <iface>` and populates speed, duplex,
+// link-detected, and port type from its colon-separated output.
 func (nf *NetInterface) collectEthtoolSetting() error {
 	data, err := shell.Run("ethtool", nf.DeviceName)
 	if err != nil {
@@ -84,6 +92,8 @@ func (nf *NetInterface) collectEthtoolSetting() error {
 	return scanner.Err()
 }
 
+// collectEthtoolDriver runs `ethtool -i <iface>` and populates the driver
+// name, driver version, and firmware version.
 func (nf *NetInterface) collectEthtoolDriver() error {
 	data, err := shell.Run("ethtool", nf.DeviceName)
 	if err != nil {
@@ -109,6 +119,10 @@ func (nf *NetInterface) collectEthtoolDriver() error {
 	return scanner.Err()
 }
 
+// isPhysicalPort returns true when the interface has a PCI device symlink
+// (indicating a physical NIC) and is not a virtual function (SR-IOV physfn).
+// Physical ports are also appended to the module-level nic slice so that
+// collectNIC can later resolve their PCI details.
 func isPhysicalPort(name string) bool {
 	devicePath := filepath.Join(paths.SysClassNet, name, "device")
 	physfn := filepath.Join(paths.SysClassNet, name, "device", "physfn")

@@ -1,3 +1,6 @@
+// Package network — nic.go collects physical NIC details including PCI device
+// metadata, ethtool ring-buffer / channel configuration, and LLDP neighbour
+// information reported by lldpctl.
 package network
 
 import (
@@ -11,6 +14,8 @@ import (
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
+// collectPhyFromPCI resolves the PCI bus address for the NIC, populates PCIe
+// device metadata, and runs the ethtool / lldpctl sub-collectors.
 func (p *PhyInterface) collectPhyFromPCI(bus string) error {
 	errs := make([]error, 0, 4)
 	pciInfo, err := pci.GetByBus(bus)
@@ -18,7 +23,7 @@ func (p *PhyInterface) collectPhyFromPCI(bus string) error {
 		errs = append(errs, err)
 	}
 
-	p.PCI = *pciInfo
+	p.PCI = pciInfo
 
 	if err := p.collectEthtoolChannel(); err != nil {
 		errs = append(errs, err)
@@ -35,6 +40,8 @@ func (p *PhyInterface) collectPhyFromPCI(bus string) error {
 	return errors.Join(errs...)
 }
 
+// LLDP keyvalue field name constants used when parsing `lldpctl -f keyvalue`
+// output for a specific interface.
 const (
 	fieldChassisMac      = "chassis.mac"
 	fieldChassisName     = "chassis.name"
@@ -47,6 +54,9 @@ const (
 	fieldPpvidEnabled    = "ppvid.enabled"
 )
 
+// collectLLDPNeighbors runs `lldpctl <iface> -f keyvalue` and parses the
+// key=value output to populate the LLDP neighbour information for the NIC.
+// The lldp.<iface>. prefix is stripped from each key before dispatching.
 func (p *PhyInterface) collectLLDPNeighbors() error {
 	data, err := shell.Run("lldpctl", p.DeviceName, "-f", "keyvalue")
 	if err != nil {
@@ -80,6 +90,7 @@ func (p *PhyInterface) collectLLDPNeighbors() error {
 	return scanner.Err()
 }
 
+// setLLDPField maps a stripped LLDP key to the appropriate LLDP struct field.
 func setLLDPField(l *LLDP, key, value string) {
 	switch key {
 	case fieldChassisMac:
@@ -103,19 +114,26 @@ func setLLDPField(l *LLDP, key, value string) {
 	}
 }
 
+// parseSection identifies which section of a two-section ethtool output
+// block (Pre-set / Current) is being parsed.
 type parseSection int
 
 const (
-	sectionPreset parseSection = iota
-	sectionCurrent
+	sectionPreset  parseSection = iota // "Pre-set maximums" section
+	sectionCurrent                     // "Current hardware settings" section
 )
 
+// sectionFieldSetter maps an ethtool field key to the destination pointers
+// for its pre-set maximum and current value respectively.
 type sectionFieldSetter struct {
 	key           string
 	maxSetter     *string
 	currentSetter *string
 }
 
+// applySectionFields parses a two-section ethtool output block (such as ring
+// buffer or channel settings) and dispatches each value to the appropriate
+// destination pointer based on the active section.
 func applySectionFields(data []byte, source []sectionFieldSetter) error {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	section := sectionPreset
@@ -161,6 +179,8 @@ func applySectionFields(data []byte, source []sectionFieldSetter) error {
 	return scanner.Err()
 }
 
+// collectEthtoolRingBuffer runs `ethtool -g <iface>` and populates the
+// NIC ring buffer (RX/TX) pre-set maximums and current settings.
 func (p *PhyInterface) collectEthtoolRingBuffer() error {
 	output, err := shell.Run("ethtool", "-g", p.DeviceName)
 	if err != nil {
@@ -173,6 +193,8 @@ func (p *PhyInterface) collectEthtoolRingBuffer() error {
 	})
 }
 
+// collectEthtoolChannel runs `ethtool -l <iface>` and populates the NIC
+// channel (queue) pre-set maximums and current configuration.
 func (p *PhyInterface) collectEthtoolChannel() error {
 	output, err := shell.Run("ethtool", "-l", p.DeviceName)
 	if err != nil {

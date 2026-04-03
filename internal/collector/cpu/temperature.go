@@ -1,3 +1,5 @@
+// Package cpu — temperature.go reads per-core temperature readings from the
+// Linux hwmon sysfs interface for both Intel (coretemp) and AMD (k10temp) CPUs.
 package cpu
 
 import (
@@ -11,6 +13,8 @@ import (
 	"github.com/zx-cc/baize/pkg/paths"
 )
 
+// findHwmonDir scans /sys/class/hwmon and returns the paths of all hwmon
+// devices whose "name" file contains "coretemp" (Intel) or "k10temp" (AMD).
 func findHwmonDir() ([]string, error) {
 	dirs, err := os.ReadDir(paths.SysClassHwmon)
 	if err != nil {
@@ -33,6 +37,12 @@ func findHwmonDir() ([]string, error) {
 	return hwmonDirs, nil
 }
 
+// collectTempFromHwmon reads per-core temperatures from hwmon sysfs and returns
+// a map keyed by "<socketID>-<coreID>" with values in degrees Celsius.
+//
+// For Intel CPUs the key format uses the package ID and core ID from the
+// coretemp "Package id N" / "Core N" labels.
+// For AMD CPUs the key format uses the Tctl die ID and Tccd ID from k10temp.
 func collectTempFromHwmon() (map[string]int, error) {
 	hwmonDirs, err := findHwmonDir()
 	if err != nil {
@@ -98,6 +108,8 @@ func collectTempFromHwmon() (map[string]int, error) {
 	return res, nil
 }
 
+// collectTempFromIpmitool is a placeholder for an IPMI-based per-core
+// temperature fallback. Currently not implemented.
 func collectTempFromIpmitool() (map[string]int, error) {
 	return nil, nil
 }

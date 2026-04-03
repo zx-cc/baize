@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/zx-cc/baize/pkg/utils"
 )
 
 // collectTask pairs a human-readable task name with its collection function.
@@ -33,10 +35,8 @@ func New() *IPMI {
 // Collect runs all IPMI sub-collectors concurrently.
 // Individual sub-task errors are joined and returned together; they do not
 // prevent other sub-tasks from completing.
-func (m *IPMI) Collect(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (m *IPMI) Collect() error {
+	ctx := context.Background()
 
 	tasks := []collectTask{
 		{name: "bmc", fn: m.collectBMC},
@@ -153,53 +153,14 @@ func (m *IPMI) checkSensorStatus() []string {
 	return issues
 }
 
-// Name returns the module identifier used by the collector Manager.
 func (m *IPMI) Name() string {
-	return "ipmi"
+	return "IPMI"
 }
 
-// // JSON serializes the IPMI struct to indented JSON and writes it to stdout.
-// func (m *IPMI) JSON() error {
-// 	return utils.JSONPrintln(m)
-// }
+func (m *IPMI) Jprintln() error {
+	return utils.JSONPrintln(m)
+}
 
-// // BriefPrintln prints a brief IPMI summary (BMC info + diagnosis) to stdout.
-// func (m *IPMI) BriefPrintln() {
-// 	// Build a flat brief view for the IPMI module.
-// 	type IPMIBrief struct {
-// 		FirmwareRevision string `name:"BMC Firmware" output:"both"`
-// 		IPMIVersion      string `name:"IPMI Version" output:"both"`
-// 		ManagementIP     string `name:"Management IP" output:"both" color:"DefaultGreen"`
-// 		MACAddress       string `name:"MAC Address" output:"both"`
-// 		Diagnose         string `name:"Diagnose" output:"both" color:"Diagnose"`
-// 		DiagnoseDetail   string `name:"Diagnose Detail" output:"both" color:"Diagnose"`
-// 	}
+func (m *IPMI) Sprintln() {}
 
-// 	brief := &IPMIBrief{
-// 		FirmwareRevision: m.BMC.FirmwareRevision,
-// 		IPMIVersion:      m.BMC.IPMIVersion,
-// 		ManagementIP:     m.BMC.ManagementIP,
-// 		MACAddress:       m.BMC.MACAddress,
-// 		Diagnose:         m.Diagnose,
-// 		DiagnoseDetail:   m.DiagnoseDetail,
-// 	}
-
-// 	wrapper := struct {
-// 		Items []*IPMIBrief `name:"IPMI INFO" output:"both"`
-// 	}{
-// 		Items: []*IPMIBrief{brief},
-// 	}
-
-// 	utils.PrinterInstance.Print(wrapper, "brief")
-// }
-
-// // DetailPrintln prints full IPMI details (sensors, SEL, PSU) to stdout.
-// func (m *IPMI) DetailPrintln() {
-// 	wrapper := struct {
-// 		Items []*IPMI `name:"IPMI INFO" output:"both"`
-// 	}{
-// 		Items: []*IPMI{m},
-// 	}
-
-// 	utils.PrinterInstance.Print(wrapper, "detail")
-// }
+func (m *IPMI) Lprintln() {}

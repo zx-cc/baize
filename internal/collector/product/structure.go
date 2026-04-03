@@ -1,13 +1,18 @@
+// Package product provides data structures for server platform identity
+// information collected from SMBIOS firmware tables and the OS.
 package product
 
+// Product is the top-level container holding all server platform identity data.
 type Product struct {
-	OperatingSystem `json:"operating_system"`
-	BIOS            `json:"bios"`
-	System          `json:"system"`
-	BaseBoard       `json:"base_board"`
-	Chassis         `json:"chassis"`
+	OS        *OperatingSystem `json:"operating_system"`
+	BIOS      *BIOS            `json:"bios"`
+	System    *System          `json:"system"`
+	BaseBoard *BaseBoard       `json:"base_board"`
+	Chassis   *Chassis         `json:"chassis"`
 }
 
+// OperatingSystem holds runtime OS identification fields read from
+// /proc/sys/kernel/* and /etc/os-release.
 type OperatingSystem struct {
 	KernelType          string `json:"kernel_type,omitzero"`
 	KernelRelease       string `json:"kernel_release,omitzero"`
@@ -18,6 +23,7 @@ type OperatingSystem struct {
 	IDLike              string `json:"id_like,omitzero"`
 }
 
+// BIOS holds firmware identification fields from SMBIOS type-0.
 type BIOS struct {
 	Vendor           string `json:"vendor,omitzero"`
 	Version          string `json:"version,omitzero"`
@@ -26,6 +32,7 @@ type BIOS struct {
 	FirmwareRevision string `json:"firmware_revision,omitzero"`
 }
 
+// System holds system-level identification fields from SMBIOS type-1.
 type System struct {
 	Manufacturer string `json:"manufacturer,omitzero"`
 	ProductName  string `json:"product_name,omitzero"`
@@ -35,12 +42,14 @@ type System struct {
 	Family       string `json:"family,omitzero"`
 }
 
+// BaseBoard holds motherboard/baseboard fields from SMBIOS type-2.
 type BaseBoard struct {
 	Manufacturer string `json:"manufacturer,omitzero"`
 	SN           string `json:"serial_number,omitzero"`
 	Type         string `json:"type,omitzero"`
 }
 
+// Chassis holds chassis/enclosure fields from SMBIOS type-3.
 type Chassis struct {
 	Manufacturer string `json:"manufacturer,omitzero"`
 	Type         string `json:"type,omitzero"`
@@ -50,6 +59,8 @@ type Chassis struct {
 	PN           string `json:"part_number,omitzero"`
 }
 
+// ProductBrief is a flattened, display-oriented view of the most important
+// product identity fields used for brief terminal output.
 type ProductBrief struct {
 	ProductName         string `json:"-" name:"Product Name" output:"both" color:"DefaultGreen"`
 	Manufacturer        string `json:"-" name:"Manufacturer" output:"both" color:"DefaultGreen"`

@@ -12,6 +12,7 @@ import (
 	"github.com/zx-cc/baize/internal/collector/ipmi"
 	"github.com/zx-cc/baize/internal/collector/memory"
 	"github.com/zx-cc/baize/internal/collector/network"
+	"github.com/zx-cc/baize/internal/collector/product"
 	"github.com/zx-cc/baize/internal/collector/raid"
 )
 
@@ -21,7 +22,7 @@ type Collector interface {
 	Collect() error
 	Sprintln()
 	Lprintln()
-	JSON()
+	Jprintln() error
 }
 
 // moduleType is a strongly-typed string for module identifiers.
@@ -37,7 +38,6 @@ const (
 	ModuleTypeBond    moduleType = "bond"
 	ModuleTypeGPU     moduleType = "gpu"
 	ModuleTypeIPMI    moduleType = "ipmi"
-	moduleTypeHealth  moduleType = "health"
 )
 
 // supportedModules is the ordered registry of all available collector modules.
@@ -122,7 +122,7 @@ func (m *Manager) Collect(ctx context.Context) error {
 		wg.Add(1)
 		go func(n string, col Collector) {
 			defer wg.Done()
-			err := col.Collect(ctx)
+			err := col.Collect()
 			resultsCh <- result{name: n, c: col, err: err}
 		}(name, c)
 	}
@@ -152,13 +152,11 @@ func (m *Manager) Collect(ctx context.Context) error {
 		}
 		switch {
 		case m.Json:
-			if err := c.JSON(); err != nil {
-				m.Log.Warn("json output error", "module", entry.module, "error", err)
-			}
+			c.Jprintln()
 		case m.Detail:
-			c.DetailPrintln()
+			c.Lprintln()
 		default:
-			c.BriefPrintln()
+			c.Sprintln()
 		}
 	}
 

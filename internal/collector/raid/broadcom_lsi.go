@@ -1,3 +1,16 @@
+// Package raid — broadcom_lsi.go collects storage controller and drive data
+// from Broadcom/LSI MegaRAID controllers using the storcli management utility.
+//
+// Discovery flow:
+//  1. collectLSI is called with the total RAID controller count and a
+//     pre-populated PCI device descriptor.
+//  2. isFound scans storcli controller slots (0..n-1) to match the PCIe bus
+//     address and determine the storcli controller ID (cid).
+//  3. collect fetches the full controller JSON (storcli /cN show J) and
+//     dispatches to sub-collectors for card details, physical drives, logical
+//     drives, enclosures, and battery/CacheVault units.
+//  4. associate links physical drives to their parent logical drives via the
+//     drive-group (DG) identifier.
 package raid
 
 import (
@@ -14,16 +27,19 @@ import (
 )
 
 const (
-	storcli = "/usr/local/bin/storcli"
+	storcli = "/usr/local/bin/storcli" // path to the storcli binary
 )
 
+// lsiController is an internal working struct that pairs a controller
+// descriptor with its storcli controller ID string.
 type lsiController struct {
 	ctrl *controller
-	cid  string
+	cid  string // storcli controller index, e.g. "0", "1"
 }
 
-//var pdRegexp = regexp.MustCompile(`^(.+):(\d+)`)
-
+// collectLSI is the vendor entry point called by the RAID dispatcher.
+// It locates the storcli controller index for the given PCI device,
+// runs the full collection, and associates drives with logical drives.
 func collectLSI(i int, c *controller) error {
 
 	lsiCtr := &lsiController{
@@ -40,6 +56,9 @@ func collectLSI(i int, c *controller) error {
 	return err
 }
 
+// isFound iterates storcli controller slots (0 to i) and checks if any slot
+// output contains the PCIe bus address of the controller.  Sets lc.cid on
+// success and returns true.
 func (lc *lsiController) isFound(i int) bool {
 	pcieAddr := lc.ctrl.PCIe.Bus[2 : len(lc.ctrl.PCIe.Bus)-3]
 	for j := 0; j < i+1; j++ {
@@ -57,10 +76,13 @@ func (lc *lsiController) isFound(i int) bool {
 	return false
 }
 
+// storcliRun is a thin wrapper around shell.Run for the storcli binary.
 func storcliRun(args ...string) ([]byte, error) {
 	return shell.Run(storcli, args...)
 }
 
+// collect fetches the full JSON output of `storcli /cN show J`, unmarshals it,
+// and dispatches to the five sub-collectors.
 func (lc *lsiController) collect() error {
 
 	data, err := storcliRun("/c"+lc.cid, "show", "J")
@@ -98,6 +120,8 @@ func (lc *lsiController) collect() error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlCard runs `storcli /cN show all J` and populates the controller
+// struct with firmware versions, hardware config, status, and capabilities.
 func (lc *lsiController) parseCtrlCard() error {
 
 	data, err := storcliRun("/c"+lc.cid, "show", "all", "J")
@@ -159,6 +183,8 @@ func (lc *lsiController) parseCtrlCard() error {
 	return nil
 }
 
+// collectCtrlPD iterates the physical drive list and calls parseCtrlPD for
+// each entry, collecting SMART data in the process.
 func (lc *lsiController) collectCtrlPD(pds []*pdList) error {
 
 	if len(pds) == 0 {
@@ -180,6 +206,9 @@ func (lc *lsiController) collectCtrlPD(pds []*pdList) error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlPD populates a physicalDrive from a storcli PD list entry, fetches
+// additional per-drive attributes via `storcli <location> show all`, and
+// collects SMART data using the megaraid access mode.
 func (lc *lsiController) parseCtrlPD(pd *pdList) error {
 
 	res := &physicalDrive{
@@ -258,6 +287,8 @@ func (lc *lsiController) parseCtrlPD(pd *pdList) error {
 	return errors.Join(errs...)
 }
 
+// parseDG converts the storcli DG field (which may arrive as a string, float,
+// or integer depending on the storcli version) to a normalised string.
 func parseDG(dg any) string {
 	switch v := dg.(type) {
 	case string:
@@ -273,6 +304,7 @@ func parseDG(dg any) string {
 	}
 }
 
+// collectCtrlLD iterates the virtual drive list and calls parseCtrlLD for each.
 func (lc *lsiController) collectCtrlLD(vds []*vdList) error {
 
 	if len(vds) == 0 {
@@ -294,6 +326,8 @@ func (lc *lsiController) collectCtrlLD(vds []*vdList) error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlLD populates a logicalDrive from a storcli VD list entry and
+// fetches additional attributes via `storcli <location> show all`.
 func (lc *lsiController) parseCtrlLD(vd *vdList) error {
 
 	ld := &logicalDrive{
@@ -355,6 +389,8 @@ func (lc *lsiController) parseCtrlLD(vd *vdList) error {
 	return scanner.Err()
 }
 
+// collectCtrlEnclosure iterates the enclosure list and calls parseCtrlEnclosure
+// for each entry.
 func (lc *lsiController) collectCtrlEnclosure(ens []*enclosureList) error {
 
 	if len(ens) == 0 {
@@ -376,6 +412,8 @@ func (lc *lsiController) collectCtrlEnclosure(ens []*enclosureList) error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlEnclosure populates an enclosure struct and fetches additional
+// attributes via `storcli <location> show all`.
 func (lc *lsiController) parseCtrlEnclosure(en *enclosureList) error {
 
 	enl := &enclosure{
@@ -423,6 +461,7 @@ func (lc *lsiController) parseCtrlEnclosure(en *enclosureList) error {
 	return scanner.Err()
 }
 
+// collectCtrlBattery converts storcli CacheVault entries to battery structs.
 func (lc *lsiController) collectCtrlBattery(bbus []*cacheVaultInfo) error {
 
 	if len(bbus) == 0 {
@@ -449,6 +488,8 @@ func (lc *lsiController) collectCtrlBattery(bbus []*cacheVaultInfo) error {
 	return nil
 }
 
+// associate links each physical drive to its parent logical drive by matching
+// the drive-group (DG) identifier.
 func (lc *lsiController) associate() {
 	// for _, ld := range lc.ctrl.LogicalDrives {
 	// 	for _, disk := range ld.pds {

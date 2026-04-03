@@ -3,6 +3,7 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -322,4 +323,15 @@ func IsEmpty(v reflect.Value) bool {
 	default:
 		return false
 	}
+}
+
+func JSONPrintln(v any) error {
+	b, err := json.MarshalIndent(v, "  ", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal json: %w", err)
+	}
+
+	fmt.Println(string(b))
+
+	return nil
 }

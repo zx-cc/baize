@@ -1,3 +1,10 @@
+// Package network collects network interface information from sysfs, the PCI
+// subsystem, and /proc/net/bonding.
+//
+// Three types of interfaces are discovered:
+//   - NetInterface  — all logical network interfaces found in /sys/class/net
+//   - PhyInterface  — physical NICs resolved via their PCI bus address
+//   - BondInterface — bonded (LAG/LACP) interfaces parsed from /proc/net/bonding
 package network
 
 import (
@@ -12,6 +19,7 @@ import (
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
+// New returns an initialised Network collector with pre-allocated slices.
 func New() *Network {
 	return &Network{
 		Net:  make([]*NetInterface, 0, 16),
@@ -20,6 +28,8 @@ func New() *Network {
 	}
 }
 
+// Collect discovers and populates all network interface types.
+// Errors from individual sub-collectors are joined and returned together.
 func (n *Network) Collect() error {
 	errs := make([]error, 0, 4)
 
@@ -38,8 +48,13 @@ func (n *Network) Collect() error {
 	return errors.Join(errs...)
 }
 
+// skipTarget lists sysfs net directory entries that should be ignored during
+// interface enumeration (loopback, loop-back aliases, and the bonding masters
+// control file).
 var skipTarget = []string{"lo", "loop", "bonding_masters"}
 
+// collectNetFromSysfs enumerates /sys/class/net and builds the logical
+// NetInterface list, skipping any entries in skipTarget.
 func (n *Network) collectNetFromSysfs() error {
 	netDirs, err := os.ReadDir(paths.SysClassNet)
 	if err != nil {
@@ -81,8 +96,12 @@ func (n *Network) collectNetFromSysfs() error {
 	return errors.Join(errs...)
 }
 
+// nic holds the names of physical NIC interfaces identified during sysfs
+// enumeration. It is populated by collectNetFromSysfs before collectNIC runs.
 var nic []string
 
+// collectNIC resolves each physical NIC name to its PCI bus address and
+// collects detailed hardware information from the PCI subsystem.
 func (n *Network) collectNIC() error {
 	if len(nic) == 0 {
 		return errors.New("nic not found")
@@ -112,6 +131,8 @@ func (n *Network) collectNIC() error {
 	return errors.Join(errs...)
 }
 
+// collectBondFromProc reads /proc/net/bonding/* to discover all configured
+// bond interfaces and their slave members.
 func (n *Network) collectBondFromProc() error {
 	bonds, err := os.ReadDir(paths.ProcNetBonding)
 	if err != nil {
@@ -139,6 +160,8 @@ func (n *Network) collectBondFromProc() error {
 	return nil
 }
 
+// parseBondFile parses a single /proc/net/bonding/<name> file and returns
+// a populated BondInterface with mode, policy, and slave details.
 func parseBondFile(name string) (*BondInterface, error) {
 	res := &BondInterface{
 		BondName:        name,
@@ -183,6 +206,8 @@ func parseBondFile(name string) (*BondInterface, error) {
 	return res, nil
 }
 
+// slaveFieldMap maps sysfs bonding_slave attribute file names to their
+// corresponding SlaveInterface setter functions for concise field population.
 var slaveFieldMap = []struct {
 	name   string
 	setter func(*SlaveInterface, string)
@@ -194,6 +219,8 @@ var slaveFieldMap = []struct {
 	{name: "state", setter: func(s *SlaveInterface, val string) { s.State = val }},
 }
 
+// parseSlaveInterface reads per-slave sysfs attributes from
+// /sys/class/net/<slave>/bonding_slave/ and returns a populated SlaveInterface.
 func parseSlaveInterface(slave string) SlaveInterface {
 	res := SlaveInterface{
 		SlaveName: slave,
@@ -212,3 +239,19 @@ func parseSlaveInterface(slave string) SlaveInterface {
 
 	return res
 }
+
+// Name returns the module identifier used for routing by the collector manager.
+func (n *Network) Name() string {
+	return "NETWORK"
+}
+
+// Jprintln serialises the collected network data to JSON and writes it to stdout.
+func (n *Network) Jprintln() error {
+	return utils.JSONPrintln(n)
+}
+
+// Sprintln prints a brief network summary to stdout.
+func (n *Network) Sprintln() {}
+
+// Lprintln prints a detailed network report to stdout.
+func (n *Network) Lprintln() {}

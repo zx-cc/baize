@@ -1,5 +1,9 @@
+// Package memory provides data structures for memory runtime statistics,
+// SMBIOS DIMM inventory, and EDAC error counters.
 package memory
 
+// Memory is the top-level container for all memory-related information
+// collected from /proc/meminfo, SMBIOS type-17, and the EDAC subsystem.
 type Memory struct {
 	PhysicalMemorySize    string               `json:"physical_memory_size,omitempty" name:"Physical Memory" output:"both" color:"defaultGreen"`
 	Maxslots              string               `json:"max_slots,omitempty" name:"Slot Max" output:"both"`
@@ -27,10 +31,12 @@ type Memory struct {
 	DiagnoseDetail        string               `json:"diagnose_detail,omitempty" name:"Diagnose Detail" output:"both" color:"Diagnose"`
 	EdacSlots             string               `json:"edac_slots,omitempty"`
 	EdacMemorySize        string               `json:"edac_memory_size,omitempty"`
-	PhysicalMemoryEntries []*SmbiosMemoryEntry `json:"physical_memory_entries,omitempty" name:"memories" output:"detail"`
+	PhysicalMemoryEntries []*SmbiosMemoryEntry `json:"physical_memory_entries,omitempty" output:"detail"`
 	EdacMemoryEntries     []*EdacMemoryEntry   `json:"edac_memory_entries,omitempty"`
 }
 
+// SmbiosMemoryEntry holds the physical attributes of a single DIMM slot as
+// reported by SMBIOS type-17 (Memory Device) tables.
 type SmbiosMemoryEntry struct {
 	Size              string `json:"size,omitempty" name:"Size" output:"detail"`
 	DeviceType        string `json:"device_type,omitempty" name:"Device Type" output:"detail"`
@@ -51,6 +57,8 @@ type SmbiosMemoryEntry struct {
 	Technology        string `json:"technology,omitempty"`
 }
 
+// EdacMemoryEntry holds the ECC error counters and topology identifiers for a
+// single DIMM as reported by the Linux EDAC kernel subsystem.
 type EdacMemoryEntry struct {
 	Size                string `json:"size,omitempty"`
 	DeviceType          string `json:"device_type,omitempty"`

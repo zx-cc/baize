@@ -43,7 +43,7 @@ type PhyInterface struct {
 	RingBuffer RingBuffer `json:"ring_buffer,omitzero"`
 	Channel    Channel    `json:"channel,omitzero"`
 	LLDP       LLDP       `json:"lldp,omitzero"`
-	PCI        pci.PCI    `json:"pci,omitzero"`
+	PCI        *pci.PCI   `json:"pci,omitzero"`
 }
 
 // RingBuffer represents NIC ring buffer configuration.

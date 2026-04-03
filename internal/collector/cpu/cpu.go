@@ -1,3 +1,11 @@
+// Package cpu collects CPU hardware information from multiple sources including
+// lscpu (for topology, cache, and feature flags), SMBIOS type-4 tables (for
+// per-socket physical attributes), and the Linux sysfs hwmon subsystem (for
+// per-core temperatures).
+//
+// The collected data is aggregated into a single CPU struct that covers both
+// system-wide metrics (architecture, NUMA topology, cache hierarchy) and
+// per-socket physical descriptors obtained from firmware.
 package cpu
 
 import (
@@ -12,6 +20,7 @@ import (
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
+// New returns an initialised CPU collector with sensible defaults.
 func New() *CPU {
 	return &CPU{
 		PowerState: "PowerSave",
@@ -19,6 +28,9 @@ func New() *CPU {
 	}
 }
 
+// Collect gathers CPU information from all available sources.
+// Errors from individual sub-collectors are joined and returned together so
+// that a single failure does not prevent other data from being collected.
 func (c *CPU) Collect() error {
 	var errs []error
 
@@ -48,6 +60,8 @@ var (
 	}
 )
 
+// associate correlates per-thread topology entries with their parent physical
+// CPU sockets and populates per-thread temperature readings from hwmon.
 func (c *CPU) associate() {
 	var errs []error
 
@@ -64,9 +78,6 @@ func (c *CPU) associate() {
 			continue
 		}
 		for _, thread := range c.threads {
-
-			println(id, thread.PID)
-
 			if id != thread.PID {
 				continue
 			}
@@ -85,6 +96,8 @@ func (c *CPU) associate() {
 	}
 }
 
+// collectFromSMBIOS populates per-socket PhysicalCPU entries from SMBIOS
+// type-4 processor tables exposed by the system firmware.
 func (c *CPU) collectFromSMBIOS() error {
 	cpus, err := smbios.GetTypeData[*smbios.Type4Processor](4)
 	if err != nil {
@@ -112,17 +125,20 @@ func (c *CPU) collectFromSMBIOS() error {
 	return nil
 }
 
-var (
-	vendorMap = map[string]string{
-		"AuthenticAMD":         "AMD",
-		"GenuineIntel":         "Intel",
-		"Intel(R) Corporation": "Intel",
-		"0x48":                 "HiSilicon",
-	}
-)
+// vendorMap normalises raw CPUID vendor strings to short display names.
+var vendorMap = map[string]string{
+	"AuthenticAMD":         "AMD",
+	"GenuineIntel":         "Intel",
+	"Intel(R) Corporation": "Intel",
+	"0x48":                 "HiSilicon",
+}
 
+// fieldSetter is a function type that writes a single parsed lscpu value into
+// the appropriate field of a CPU struct.
 type fieldSetter func(*CPU, string)
 
+// lscpuFieldSetters maps lscpu output keys to the corresponding CPU field
+// setter functions, enabling O(1) dispatch during line-by-line parsing.
 var lscpuFieldSetters = map[string]fieldSetter{
 	"Architecture":        func(info *CPU, value string) { info.Architecture = value },
 	"Byte Order":          func(info *CPU, value string) { info.ByteOrder = value },
@@ -153,6 +169,7 @@ var lscpuFieldSetters = map[string]fieldSetter{
 	"Flags":          func(info *CPU, value string) { info.Flags = strings.Fields(value) },
 }
 
+// collectFromLscpu runs lscpu and populates the system-wide CPU fields.
 func (c *CPU) collectFromLscpu() error {
 	data, err := shell.Run("lscpu")
 	if err != nil {
@@ -174,14 +191,18 @@ func (c *CPU) collectFromLscpu() error {
 	return scanner.Err()
 }
 
+// Name returns the module identifier used for routing by the collector manager.
 func (c *CPU) Name() string {
 	return "CPU"
 }
 
-func (c *CPU) Marshal() {
-
+// Jprintln serialises the collected CPU data to JSON and writes it to stdout.
+func (c *CPU) Jprintln() error {
+	return utils.JSONPrintln(c)
 }
 
-func (c *CPU) PrintDetail() {}
+// Sprintln prints a brief CPU summary to stdout.
+func (c *CPU) Sprintln() {}
 
-func (c *CPU) PrintBreif() {}
+// Lprintln prints a detailed CPU report to stdout.
+func (c *CPU) Lprintln() {}

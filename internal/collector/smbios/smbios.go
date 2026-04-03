@@ -1,3 +1,12 @@
+// Package smbios implements a pure-Go SMBIOS/DMI table reader.
+//
+// Two read strategies are supported and selected automatically at runtime:
+//   - sysfsReader  — preferred; reads /sys/firmware/dmi/tables/ (no root needed)
+//   - devMemReader — fallback; reads /dev/mem by scanning 0xF0000–0xFFFFF for
+//     the "_SM" / "_SM3" entry-point anchor (requires root / CAP_SYS_RAWIO)
+//
+// Parsed tables are cached process-wide via a sync.Once so that subsequent
+// calls incur no I/O cost.
 package smbios
 
 import (
@@ -11,40 +20,46 @@ import (
 )
 
 const (
-	sysfsDMI        = "/sys/firmware/dmi/tables/DMI"
-	sysfsEntryPoint = "/sys/firmware/dmi/tables/smbios_entry_point"
-	devMem          = "/dev/mem"
-	startAddr       = 0xF0000
-	endAddr         = 0x100000
-	maxTableSize    = 1024 * 1024 // 1MB limit
-	readTimeout     = 10 * time.Second
+	sysfsDMI        = "/sys/firmware/dmi/tables/DMI"                // sysfs SMBIOS table blob
+	sysfsEntryPoint = "/sys/firmware/dmi/tables/smbios_entry_point" // sysfs entry-point blob
+	devMem          = "/dev/mem"                                    // physical memory device (fallback)
+	startAddr       = 0xF0000                                       // SMBIOS scan range start (inclusive)
+	endAddr         = 0x100000                                      // SMBIOS scan range end (exclusive)
+	maxTableSize    = 1024 * 1024                                   // 1 MB upper bound on table size
+	readTimeout     = 10 * time.Second                              // overall read deadline
 )
 
-// 错误类型定义
+// SMBIOSError wraps an SMBIOS I/O failure with the operation and path that
+// caused it, allowing callers to distinguish SMBIOS errors from other errors.
 type SMBIOSError struct {
 	Op   string
 	Path string
 	Err  error
 }
 
+// Error implements the error interface.
 func (e *SMBIOSError) Error() string {
 	return fmt.Sprintf("smbios %s %s: %v", e.Op, e.Path, e.Err)
 }
 
+// Unwrap returns the underlying error to support errors.Is / errors.As.
 func (e *SMBIOSError) Unwrap() error {
 	return e.Err
 }
 
-// 接口定义
+// Reader is the internal interface that abstracts over the two SMBIOS read
+// strategies (sysfs and /dev/mem).
 type Reader interface {
 	readTables(ctx context.Context, tableAddr, tableLen int) ([]*Table, error)
 	readEntryPoint(ctx context.Context) (EntryPoint, error)
 	Close() error
 }
 
-// sysfs reader implementation
+// sysfsReader reads SMBIOS data from the Linux sysfs DMI interface.
+// It does not hold any resources and Close is a no-op.
 type sysfsReader struct{}
 
+// readTables reads the DMI table blob from /sys/firmware/dmi/tables/DMI.
 func (r *sysfsReader) readTables(ctx context.Context, tableAddr, tableLen int) ([]*Table, error) {
 	select {
 	case <-ctx.Done():
@@ -65,6 +80,8 @@ func (r *sysfsReader) readTables(ctx context.Context, tableAddr, tableLen int) (
 	return parseTables(file)
 }
 
+// readEntryPoint reads the SMBIOS entry point from
+// /sys/firmware/dmi/tables/smbios_entry_point.
 func (r *sysfsReader) readEntryPoint(ctx context.Context) (EntryPoint, error) {
 	select {
 	case <-ctx.Done():
@@ -85,13 +102,17 @@ func (r *sysfsReader) Close() error {
 	return nil // No resources to clean up
 }
 
-// devmem reader implementation
+// devMemReader reads SMBIOS data directly from /dev/mem.
+// It scans the physical memory range 0xF0000–0xFFFFF for the "_SM" anchor to
+// locate the entry point, then reads the table at the address stored therein.
 type devMemReader struct {
 	file   *os.File
 	mutex  sync.RWMutex
 	closed bool
 }
 
+// NewDevMemReader opens /dev/mem and returns a devMemReader ready for use.
+// The caller must call Close when finished.
 func NewDevMemReader() (*devMemReader, error) {
 	file, err := os.Open(devMem)
 	if err != nil {
@@ -101,6 +122,7 @@ func NewDevMemReader() (*devMemReader, error) {
 	return &devMemReader{file: file}, nil
 }
 
+// Close releases the /dev/mem file handle.
 func (r *devMemReader) Close() error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -114,12 +136,15 @@ func (r *devMemReader) Close() error {
 	return nil
 }
 
+// isClosed is a thread-safe check on the closed flag.
 func (r *devMemReader) isClosed() bool {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 	return r.closed
 }
 
+// readTables reads tableLen bytes from /dev/mem at tableAddr and parses them
+// as SMBIOS tables.
 func (r *devMemReader) readTables(ctx context.Context, tableAddr, tableLen int) ([]*Table, error) {
 	select {
 	case <-ctx.Done():
@@ -153,6 +178,7 @@ func (r *devMemReader) readTables(ctx context.Context, tableAddr, tableLen int) 
 	return parseTables(bytes.NewReader(data))
 }
 
+// readEntryPoint locates and parses the SMBIOS entry point from /dev/mem.
 func (r *devMemReader) readEntryPoint(ctx context.Context) (EntryPoint, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
@@ -173,6 +199,9 @@ func (r *devMemReader) readEntryPoint(ctx context.Context) (EntryPoint, error) {
 	return parseEntryPoint(r.file)
 }
 
+// findEntryPointAddr scans the physical memory range 0xF0000–0xFFFFF in
+// 16-byte (paragraph) increments looking for the "_SM" SMBIOS anchor.
+// Returns the physical address of the entry point, or an error if not found.
 func (r *devMemReader) findEntryPointAddr(ctx context.Context) (int, error) {
 
 	if _, err := r.file.Seek(int64(startAddr), io.SeekStart); err != nil {
@@ -201,6 +230,10 @@ func (r *devMemReader) findEntryPointAddr(ctx context.Context) (int, error) {
 	return 0, fmt.Errorf("SMBIOS entry point not found in memory range 0x%x-0x%x", startAddr, endAddr)
 }
 
+// smbiosReader is the top-level entry point that selects the appropriate read
+// strategy and returns the parsed entry point and all SMBIOS tables.
+// If sysfsEntryPoint exists the sysfsReader is used; otherwise /dev/mem is
+// tried.  A default 10-second timeout is applied if ctx is nil.
 func smbiosReader(ctx context.Context) (EntryPoint, []*Table, error) {
 	if ctx == nil {
 		var cancel context.CancelFunc
@@ -222,6 +255,8 @@ func smbiosReader(ctx context.Context) (EntryPoint, []*Table, error) {
 	return readFromSource(ctx, reader)
 }
 
+// readFromSource reads the entry point and then the table data from the given
+// Reader implementation, returning the parsed results.
 func readFromSource(ctx context.Context, reader Reader) (EntryPoint, []*Table, error) {
 	ep, err := reader.readEntryPoint(ctx)
 	if err != nil {

@@ -31,10 +31,10 @@ func newCliCfg() *cliCfg {
 
 // printBanner prints the application header when in terminal (non-JSON) mode.
 func printBanner() {
-	fmt.Printf("\n%s╔══════════════════════════════════════════════════╗%s\n", utils.ColorCyan, utils.ColorReset)
+	fmt.Printf("\n%s╔══════════════════════════════════════════════════╗%s\n", utils.Cyan, utils.Reset)
 	fmt.Printf("%s║%s  %s白泽 (Baize) — Hardware Information Collector%s    %s║%s\n",
-		utils.ColorCyan, utils.ColorReset, utils.ColorBold, utils.ColorReset, utils.ColorCyan, utils.ColorReset)
-	fmt.Printf("%s╚══════════════════════════════════════════════════╝%s\n", utils.ColorCyan, utils.ColorReset)
+		utils.Cyan, utils.Reset, utils.Bold, utils.Reset, utils.Cyan, utils.Reset)
+	fmt.Printf("%s╚══════════════════════════════════════════════════╝%s\n", utils.Cyan, utils.Reset)
 }
 
 func main() {
@@ -57,7 +57,7 @@ func main() {
 
 	if err := manager.NewManager(&m); err != nil {
 		if !cfg.json {
-			fmt.Printf("\n%s⚠ collection warning: %v%s\n", utils.ColorYellow, err, utils.ColorReset)
+			fmt.Printf("\n%s⚠ collection warning: %v%s\n", utils.Yellow, err, utils.Reset)
 		}
 	}
 
@@ -65,6 +65,6 @@ func main() {
 	if !cfg.json {
 		elapsed := time.Since(start)
 		fmt.Printf("\n%s── Collection completed in %.2fs ──%s\n\n",
-			utils.ColorDim, elapsed.Seconds(), utils.ColorReset)
+			utils.Dim, elapsed.Seconds(), utils.Reset)
 	}
 }

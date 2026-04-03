@@ -1,3 +1,5 @@
+// Package product — operating_system.go reads OS identification information
+// from /proc/sys/kernel/* and /etc/os-release (with distro-specific fallbacks).
 package product
 
 import (
@@ -11,6 +13,7 @@ import (
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
+// Kernel and OS release file paths read during OS identification.
 const (
 	hostNamePath      = "/proc/sys/kernel/hostname"
 	ostypePath        = "/proc/sys/kernel/ostype"
@@ -23,6 +26,8 @@ const (
 	debianVersionPath = "/etc/debian_version"
 )
 
+// collectOS reads kernel identification and hostname from procfs, then
+// parses /etc/os-release for distribution name and version.
 func collectOS() (*OperatingSystem, error) {
 	res := &OperatingSystem{}
 
@@ -52,6 +57,8 @@ func collectOS() (*OperatingSystem, error) {
 	return res, errors.Join(errs...)
 }
 
+// collectDistribution parses /etc/os-release for the distribution NAME and
+// ID_LIKE fields, then resolves the version via distro-specific release files.
 func collectDistribution(m *OperatingSystem) error {
 	file, err := os.Open(osReleasePath)
 	if err != nil {
@@ -79,11 +86,16 @@ func collectDistribution(m *OperatingSystem) error {
 }
 
 var (
-	regexVersion = regexp.MustCompile(`[\( ]([\d\.]+)`) // Ubuntu, RHEL 通用
+	// regexVersion is a generic version extractor for Ubuntu, RHEL, and similar
+	// distributions that embed the version in parentheses or after a space.
+	regexVersion = regexp.MustCompile(`[\( ]([\d\.]+)`)
 	regexCentos  = regexp.MustCompile(`^CentOS(?: Linux)? release ([\d\.]+)`)
 	regexRocky   = regexp.MustCompile(`^Rocky Linux release ([\d\.]+)`)
 	regexDebian  = regexp.MustCompile(`^([\d\.]+)`)
 
+	// distrMatchers is an ordered list of distribution-specific version
+	// extraction rules.  Each matcher is tried in order; the first whose
+	// prefix matches the distribution name is used.
 	distrMatchers = []struct {
 		prefix   string
 		filePath string
@@ -99,6 +111,9 @@ var (
 	}
 )
 
+// getDistributionVersion returns the version string for the given distribution
+// name by trying each entry in distrMatchers in order.
+// Returns "Unknown" if no matcher succeeds.
 func getDistributionVersion(ver string) string {
 	ver = strings.ToLower(ver)
 	if ver == "" {

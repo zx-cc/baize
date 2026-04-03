@@ -1,3 +1,10 @@
+// Package memory — edac.go collects hardware ECC (Error Correction Code)
+// memory error counters from the Linux EDAC (Error Detection And Correction)
+// kernel subsystem via /sys/bus/edac/devices/mc*/dimm*.
+//
+// EDAC provides per-DIMM correctable-error (CE) and uncorrectable-error (UE)
+// counts along with topology attributes such as socket, memory controller,
+// channel, and DIMM index.
 package memory
 
 import (
@@ -11,6 +18,10 @@ import (
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
+// collectFromEdac enumerates EDAC DIMM sysfs entries under
+// /sys/bus/edac/devices/mc*/dimm* and appends one EdacMemoryEntry per DIMM.
+// If the EDAC path does not exist (e.g. ECC not supported), the function
+// returns nil without an error.
 func (m *Memory) collectFromEdac() error {
 	if _, err := os.Stat(paths.SysBusEdacMC); err != nil {
 		if os.IsNotExist(err) {
@@ -50,6 +61,8 @@ func (m *Memory) collectFromEdac() error {
 	return errors.Join(errs...)
 }
 
+// parseDimmDir reads all sysfs attribute files for a single DIMM directory
+// and returns a populated EdacMemoryEntry.
 func parseDimmDir(dimmDir string) (*EdacMemoryEntry, error) {
 	dimm := &EdacMemoryEntry{
 		DIMMID: filepath.Base(dimmDir),
@@ -82,6 +95,10 @@ func parseDimmDir(dimmDir string) (*EdacMemoryEntry, error) {
 	return dimm, nil
 }
 
+// parseDimmLabel decodes the EDAC dimm_label string, which encodes socket,
+// memory-controller, channel, and DIMM identifiers separated by underscores
+// and using '#' as a key/value separator.
+// Example: "SrcID#0_Ha#0_Chan#1_DIMM#0"
 func parseDimmLabel(dimm *EdacMemoryEntry, content string) {
 	parts := strings.Split(content, "_")
 	if len(parts) < 4 {

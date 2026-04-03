@@ -1,3 +1,5 @@
+// Package product — server_info.go queries SMBIOS tables for server platform
+// identity information (BIOS, system, baseboard, chassis).
 package product
 
 import (
@@ -7,8 +9,9 @@ import (
 	"github.com/zx-cc/baize/internal/collector/smbios"
 )
 
+// collectBIOS reads SMBIOS type-0 and returns a populated BIOS struct.
 func collectBIOS() (*BIOS, error) {
-	bios, err := smbios.GetTypeData[smbios.Type0BIOS](0)
+	bios, err := smbios.GetTypeData[*smbios.Type0BIOS](0)
 	if err != nil {
 		return nil, err
 	}
@@ -24,8 +27,9 @@ func collectBIOS() (*BIOS, error) {
 	}, nil
 }
 
+// collectSystem reads SMBIOS type-1 and returns a populated System struct.
 func collectSystem() (*System, error) {
-	system, err := smbios.GetTypeData[smbios.Type1System](1)
+	system, err := smbios.GetTypeData[*smbios.Type1System](1)
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +46,9 @@ func collectSystem() (*System, error) {
 	}, nil
 }
 
+// collectBaseBoard reads SMBIOS type-2 and returns a populated BaseBoard struct.
 func collectBaseBoard() (*BaseBoard, error) {
-	baseboard, err := smbios.GetTypeData[smbios.Type2BaseBoard](2)
+	baseboard, err := smbios.GetTypeData[*smbios.Type2BaseBoard](2)
 	if err != nil {
 		return nil, err
 	}
@@ -57,8 +62,9 @@ func collectBaseBoard() (*BaseBoard, error) {
 	}, nil
 }
 
+// collectChassis reads SMBIOS type-3 and returns a populated Chassis struct.
 func collectChassis() (*Chassis, error) {
-	chassis, err := smbios.GetTypeData[smbios.Type3Chassis](3)
+	chassis, err := smbios.GetTypeData[*smbios.Type3Chassis](3)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +81,7 @@ func collectChassis() (*Chassis, error) {
 	}, nil
 }
 
+// formatRevision formats a major.minor byte pair as a "M.N" version string.
 func formatRevision(major, minor uint8) string {
 	buf := make([]byte, 0, 8)
 	buf = strconv.AppendUint(buf, uint64(major), 10)
@@ -83,6 +90,8 @@ func formatRevision(major, minor uint8) string {
 	return string(buf)
 }
 
+// formatChassisHeight returns the chassis height in rack units (e.g. "2U")
+// for rack-mounted chassis types; returns an empty string for other types.
 func formatChassisHeight(chassisType string, height uint8) string {
 	if !strings.HasPrefix(chassisType, "Rack") {
 		return ""

@@ -1,3 +1,17 @@
+// Package raid — hpe.go collects storage controller and drive data from HPE
+// Smart Array controllers using the hpssacli management utility.
+//
+// Discovery flow:
+//  1. collectHPE is called with the total RAID controller count and a PCI
+//     device descriptor.
+//  2. hasController probes hpssacli slots 0..n-1, searching for the PCIe bus
+//     address to determine the hpssacli slot ID (cid).
+//  3. collect runs `hpssacli ctrl slot=N show config`, parses embedded physical
+//     and logical drive location strings, then dispatches to sub-collectors.
+//  4. SMART data is collected via the cciss access mode; failed drives are
+//     tracked with an atomic counter so that cciss device IDs remain correct.
+//  5. associate links physical drives to their parent logical drives by
+//     matching the location identifier.
 package raid
 
 import (
@@ -16,13 +30,16 @@ import (
 )
 
 const (
-	hpssacli = "/usr/local/beidou/tool/hpssacli"
+	hpssacli = "/usr/local/beidou/tool/hpssacli" // path to the hpssacli binary
 )
 
+// hpeController is an internal working struct that tracks the HPE controller
+// slot ID and a running count of failed physical drives (used to adjust the
+// cciss device index passed to smartctl).
 type hpeController struct {
 	ctrl      *controller
-	cid       string
-	failedPDs uint32
+	cid       string // hpssacli slot number, e.g. "0"
+	failedPDs uint32 // atomic count of drives in Failed state
 }
 
 var (
@@ -31,6 +48,7 @@ var (
 	hpeEnclosureRegex = regexp.MustCompile(`Internal Drive Cage at Port (\d+I), Box (\d+), ([A-Za-z]+)`)
 )
 
+// collectHPE is the vendor entry point called by the RAID dispatcher.
 func collectHPE(i int, c *controller) error {
 	hpeCtr := &hpeController{
 		ctrl: c,
@@ -47,6 +65,8 @@ func collectHPE(i int, c *controller) error {
 	return err
 }
 
+// hasController probes hpssacli slots 0..num-1 to find the slot whose output
+// contains the controller's PCIe bus address.  Sets h.cid on success.
 func (h *hpeController) hasController(num int) bool {
 	for i := 0; i < num; i++ {
 		script := fmt.Sprintf("%s ctrl slot=%d show | grep -i %s", hpssacli, i, h.ctrl.PCIe.Bus)
@@ -60,10 +80,13 @@ func (h *hpeController) hasController(num int) bool {
 	return false
 }
 
+// hpssacliRun is a thin wrapper around shell.Run for the hpssacli binary.
 func hpssacliRun(args ...string) ([]byte, error) {
 	return shell.Run(hpssacli, args...)
 }
 
+// collect runs the main hpssacli config query, extracts drive and enclosure
+// location strings via regex, then calls each sub-collector.
 func (h *hpeController) collect() error {
 	data, err := hpssacliRun("ctrl", "slot="+h.cid, "show", "config")
 	if err != nil {

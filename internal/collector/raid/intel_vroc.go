@@ -1,3 +1,17 @@
+// Package raid — intel_vroc.go collects storage controller and drive data from
+// Intel VROC (Virtual RAID on CPU) using the mdadm management utility.
+//
+// Intel VROC presents as one or more Intel PCI devices (VID 0x8086).  All
+// controller state is read once via a sync.Once and stored in a package-level
+// intelController; subsequent calls simply copy the matching sub-struct into
+// the caller-supplied controller.
+//
+// Discovery flow:
+//  1. collectIntel/isFoundIntel is called for each Intel PCI storage device.
+//  2. intelOnce ensures collectCtrlCard, collectCtrlPD, and collectCtrlLD run
+//     exactly once via mdadm --detail-platform and /proc/mdstat.
+//  3. associate wires physical drives to logical drives and logical drives to
+//     their parent VROC controller.
 package raid
 
 import (
@@ -14,31 +28,40 @@ import (
 )
 
 const (
-	procMdstat = "/proc/mdstat"
+	procMdstat = "/proc/mdstat" // kernel software-RAID state file
 	mdadm      = "/usr/sbin/mdadm"
 )
 
+// intelController caches all VROC controller, physical drive, and logical drive
+// data collected from mdadm in a single pass.
 type intelController struct {
 	ctrl []*vroc
 	lds  []*logicalDrive
 	pds  []*physicalDrive
 }
 
+// vroc represents a single Intel VROC controller instance discovered via
+// `mdadm --detail-platform`.
 type vroc struct {
 	ctrl    *controller
-	pds     []string
-	pciAddr string
+	pds     []string // raw disk identifiers from --detail-platform output
+	pciAddr string   // PCIe bus address (e.g. "0000:3b:00.0")
 }
 
 var (
+	// intelCtrls is the package-level shared state for all Intel VROC controllers.
 	intelCtrls = &intelController{}
+	// intelOnece ensures that mdadm collection runs exactly once per process.
 	intelOnece sync.Once
 )
 
+// collectIntel is the vendor entry point called by the RAID dispatcher.
 func collectIntel(i int, c *controller) error {
 	return isFoundIntel(c)
 }
 
+// isFoundIntel triggers the one-time mdadm collection (via sync.Once) and
+// then copies the matching VROC controller data into the caller's controller.
 func isFoundIntel(c *controller) error {
 	var err error
 
@@ -57,6 +80,8 @@ func isFoundIntel(c *controller) error {
 	return err
 }
 
+// collect runs all three mdadm sub-collectors: card, physical drives, logical
+// drives.  Errors are joined and returned.
 func (ic *intelController) collect() error {
 	errs := make([]error, 0, 3)
 	if err := ic.collectCtrlCard(); err != nil {
@@ -74,10 +99,13 @@ func (ic *intelController) collect() error {
 	return errors.Join(errs...)
 }
 
+// mdadmRun is a thin wrapper around shell.Run for the mdadm binary.
 func mdadmRun(args ...string) ([]byte, error) {
 	return shell.Run(mdadm, args...)
 }
 
+// collectCtrlCard runs `mdadm --detail-platform` and splits the output into
+// per-controller blocks separated by blank lines.
 func (ic *intelController) collectCtrlCard() error {
 	data, err := mdadmRun("--detail-platform")
 	if err != nil {
@@ -96,6 +124,9 @@ func (ic *intelController) collectCtrlCard() error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlCard parses a single --detail-platform controller block, extracting
+// supported RAID levels, maximum drive count, I/O controller PCIe address, and
+// associated disk devices (NVMe-under-VMD and Port-attached).
 func (ic *intelController) parseCtrlCard(data []byte) error {
 
 	if len(data) == 0 {
@@ -143,6 +174,8 @@ func (ic *intelController) parseCtrlCard(data []byte) error {
 	return scanner.Err()
 }
 
+// collectCtrlPD enumerates block devices via lsblk and collects SMART data
+// for each one using the jbod (direct pass-through) access mode.
 func (ic *intelController) collectCtrlPD() error {
 
 	pds := utils.GetBlockByLsblk()
@@ -160,6 +193,7 @@ func (ic *intelController) collectCtrlPD() error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlPD collects SMART data for a single block device name.
 func (ic *intelController) parseCtrlPD(pd string) error {
 
 	res := &physicalDrive{
@@ -174,6 +208,8 @@ func (ic *intelController) parseCtrlPD(pd string) error {
 	return err
 }
 
+// collectCtrlLD parses /proc/mdstat for active md arrays and calls parseCtrlLD
+// for each one.
 func (ic *intelController) collectCtrlLD() error {
 
 	file, err := os.Open(procMdstat)
@@ -201,6 +237,8 @@ func (ic *intelController) collectCtrlLD() error {
 	return errors.Join(errs...)
 }
 
+// parseCtrlLD runs `mdadm --detail /dev/<md>` and populates a logicalDrive
+// struct with RAID level, capacity, state, and member drive paths.
 func (ic *intelController) parseCtrlLD(md string) error {
 
 	ld := &logicalDrive{
@@ -249,6 +287,9 @@ func (ic *intelController) parseCtrlLD(md string) error {
 	return scanner.Err()
 }
 
+// associate wires physical drives to their parent VROC controller and
+// links logical drives to both their member physical drives and their
+// parent VROC controller.
 func (ic *intelController) associate() {
 	if len(ic.ctrl) == 0 || len(ic.pds) == 0 || len(ic.lds) == 0 {
 		return

@@ -1,3 +1,11 @@
+// Package memory collects memory hardware and runtime statistics from three
+// independent sources:
+//   - /proc/meminfo   — kernel-reported runtime memory usage counters
+//   - SMBIOS type-17  — physical DIMM slot inventory from system firmware
+//   - /sys/bus/edac    — hardware ECC error counters via the EDAC kernel subsystem
+//
+// After collection, a health diagnosis is performed to detect asymmetric
+// configurations, slot mismatches, and potential DIMM failures.
 package memory
 
 import (
@@ -12,6 +20,7 @@ import (
 	"github.com/zx-cc/baize/pkg/utils"
 )
 
+// New returns an initialised Memory collector with pre-allocated slices.
 func New() *Memory {
 	return &Memory{
 		PhysicalMemoryEntries: make([]*SmbiosMemoryEntry, 0, 32),
@@ -19,6 +28,7 @@ func New() *Memory {
 	}
 }
 
+// Collect runs all memory sub-collectors in sequence and joins any errors.
 func (m *Memory) Collect() error {
 	errs := make([]error, 0, 3)
 
@@ -43,6 +53,8 @@ func (m *Memory) Collect() error {
 	return errors.Join(errs...)
 }
 
+// collectFromMeminfo reads /proc/meminfo and parses each field into a
+// human-readable size string (auto-scaled with binary prefixes).
 func (m *Memory) collectFromMeminfo() error {
 	file, err := os.Open(paths.ProcMeminfo)
 	if err != nil {
@@ -93,6 +105,8 @@ func (m *Memory) collectFromMeminfo() error {
 	return scanner.Err()
 }
 
+// collectFromSMBIOS queries SMBIOS type-17 tables to build the physical DIMM
+// inventory, computing the total installed physical memory size.
 func (m *Memory) collectFromSMBIOS() error {
 	memoryTables, err := smbios.GetTypeData[*smbios.Type17MemoryDevice](17)
 	if err != nil {
@@ -196,6 +210,8 @@ func (m *Memory) diagnose() {
 	}
 }
 
+// toBytes converts a human-readable size string (e.g. "16 GB") to bytes.
+// Supported units: B, KB, MB, GB, TB (case-insensitive).
 func toBytes(s string) (int, error) {
 	parts := strings.Fields(s)
 	if len(parts) != 2 {
@@ -219,4 +235,24 @@ func toBytes(s string) (int, error) {
 	}
 
 	return res, err
+}
+
+// Name returns the module identifier used for routing by the collector manager.
+func (m *Memory) Name() string {
+	return "MEMORY"
+}
+
+// Jprintln serialises the collected memory data to JSON and writes it to stdout.
+func (m *Memory) Jprintln() error {
+	return utils.JSONPrintln(m)
+}
+
+// Sprintln prints a brief memory summary to stdout.
+func (m *Memory) Sprintln() {
+	utils.PrinterInstance.Print(m, "MEMORY INFO", "brief")
+}
+
+// Lprintln prints a detailed memory report to stdout.
+func (m *Memory) Lprintln() {
+	utils.PrinterInstance.Print(m, "MEMORY INFO", "detail")
 }
